@@ -124,6 +124,12 @@ public:
     vals_->clear();
     grads_->clear();
   }
+
+  // Free the underlying memory but leave the parameters and names with dangling pointers.  Only use this if you're going to edit the memory pointers manually.
+  virtual void freeMemory() {
+    vals_->clear();
+    grads_->clear();
+  }
 };
 
 class MappedParameters : public Parameters {
@@ -167,6 +173,10 @@ public:
   virtual void clear() override {
     params_.clear();
     named_.clear();
+  }
+
+  void freeMemory() override {
+    ABORT("Have not implemented partial munmap for parameters");
   }
 };
 

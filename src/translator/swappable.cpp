@@ -46,7 +46,7 @@ GPUEngine::GPUEngine(Ptr<Options> options, size_t deviceIdx)
     // TODO lexical shortlists are not supported yet.
   }
   graph_->forward();
-  // TODO: reach into graph_->params() private members and free the parameter memory.
+  graph_->params()->freeMemory();
 }
 
 GPUEngine::~GPUEngine() {}
