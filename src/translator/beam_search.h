@@ -52,7 +52,7 @@ public:
   Beams purgeBeams(const Beams& beams, /*in/out=*/std::vector<IndexType>& batchIdxMap);
 
   // main decoding function
-  Histories search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch);
+  Histories search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch, float max_length_factor = -1.f);
 };
 
 }  // namespace marian

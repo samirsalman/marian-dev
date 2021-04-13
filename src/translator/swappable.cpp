@@ -100,7 +100,7 @@ std::string MultilineInputHack(const std::vector<std::string> &input) {
   }
 }
 
-Histories GPULoadedModel::Translate(const std::vector<std::string> &input) {
+Histories GPULoadedModel::Translate(const std::vector<std::string> &input, float max_length_factor) {
   ABORT_IF(!trgVocab_, "GPULoadedModel needs to be overwritten by a CPU model first.");
   engine_->SwapPointers(parameters_);
 
@@ -111,7 +111,7 @@ Histories GPULoadedModel::Translate(const std::vector<std::string> &input) {
   Histories ret;
   ret.reserve(input.size());
   for (auto&& batch : batchGenerator) {
-    auto result = search.search(engine_->graph_, batch);
+    auto result = search.search(engine_->graph_, batch, max_length_factor);
     ret.insert(ret.end(), result.begin(), result.end());
   }
   std::sort(ret.begin(), ret.end(),[](marian::Ptr<marian::History> a, marian::Ptr<marian::History> b){return a->getLineNum() < b->getLineNum();});

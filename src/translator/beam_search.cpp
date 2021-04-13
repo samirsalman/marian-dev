@@ -248,7 +248,10 @@ Beams BeamSearch::purgeBeams(const Beams& beams, /*in/out=*/std::vector<IndexTyp
 
 //**********************************************************************
 // main decoding function
-Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch) {
+Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch, float max_length_factor) {
+  if (max_length_factor < 0)
+    max_length_factor = options_->get<float>("max-length-factor");
+
   auto factoredVocab = trgVocab_->tryAs<FactoredVocab>();
   size_t numFactorGroups = factoredVocab ? factoredVocab->getNumGroups() : 1;
   if (numFactorGroups == 1) // if no factors then we didn't need this object in the first place
@@ -503,7 +506,7 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
     for(int batchIdx = 0; batchIdx < origDimBatch; ++batchIdx) {
       // if this batch entry has surviving hyps then add them to the traceback grid
       if(!beams[batchIdx].empty()) { // if the beam is not empty expand the history object associated with the beam
-        if (histories[batchIdx]->size() >= options_->get<float>("max-length-factor") * batch->front()->batchWidth())
+        if (histories[batchIdx]->size() >= max_length_factor * batch->front()->batchWidth())
           maxLengthReached = true;
         histories[batchIdx]->add(beams[batchIdx], trgEosId, purgedNewBeams[batchIdx].empty() || maxLengthReached);
       }
