@@ -175,7 +175,7 @@ public:
     reserve(bytes);
   }
 
-  size_t alignedSize(size_t size) {
+  size_t alignedSize(size_t size) const {
     return (size_t)(ceil(size / (double)alignment_) * alignment_);
   }
 
@@ -189,7 +189,7 @@ public:
   }
 
   template <typename T>
-  size_t capacity(size_t num) {
+  size_t capacity(size_t num) const {
     return alignedSize(num * sizeof(T));
   }
 

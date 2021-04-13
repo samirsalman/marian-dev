@@ -25,10 +25,10 @@ protected:
   std::vector<Expr> params_;
   std::unordered_map<std::string, Expr> named_;
 
-  Ptr<TensorAllocator> vals_;
-  Ptr<TensorAllocator> grads_;
+  std::unique_ptr<TensorAllocator> vals_;
+  std::unique_ptr<TensorAllocator> grads_;
 
-  size_t totalCapacity(Ptr<TensorAllocator> alloc) {
+  size_t totalCapacity(const TensorAllocator *alloc) {
     size_t sum = 0;
     for(auto p : params_) {
       sum += alloc->capacity(p->shape(), p->value_type());
@@ -74,18 +74,18 @@ public:
   }
 
   virtual void init(Ptr<Backend> backend) {
-    vals_ = New<TensorAllocator>(backend);
-    grads_ = New<TensorAllocator>(backend);
+    vals_.reset(new TensorAllocator(backend));
+    grads_.reset(new TensorAllocator(backend));
   }
 
   virtual void init(Ptr<Backend> backend, Ptr<Device> device) {
-    vals_ = New<TensorAllocator>(backend, device);
-    grads_ = New<TensorAllocator>(backend, device);
+    vals_.reset(new TensorAllocator(backend, device));
+    grads_.reset(new TensorAllocator(backend, device));
   }
 
   virtual void allocateForward() {
     if(!params_.empty() && vals_->size() == 0) {
-      vals_->reserveExact(totalCapacity(vals_));
+      vals_->reserveExact(totalCapacity(vals_.get()));
 
       // sort parameters by name before allocation to make sure the memory layout after allocation is always the same
       std::sort(params_.begin(), params_.end(), [](Expr n1, Expr n2){ return n1->name() < n2->name(); });
@@ -104,7 +104,7 @@ public:
       // sort parameters by name before allocation to make sure the memory layout after allocation is always the same
       std::sort(params_.begin(), params_.end(), [](Expr n1, Expr n2){ return n1->name() < n2->name(); });
 
-      grads_->reserveExact(totalCapacity(grads_));
+      grads_->reserveExact(totalCapacity(grads_.get()));
       for(auto p : params_)
         if(!p->grad())
           grads_->allocate(p->grad(), p->shape(), p->value_type());
@@ -127,8 +127,8 @@ public:
 
   // Free the underlying memory but leave the parameters and names with dangling pointers.  Only use this if you're going to edit the memory pointers manually.
   virtual void freeMemory() {
-    vals_->clear();
-    grads_->clear();
+    vals_.reset();
+    grads_.reset();
   }
 };
 

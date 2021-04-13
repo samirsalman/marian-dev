@@ -69,7 +69,7 @@ public:
 
   void clear() { allocator_->clear(); }
 
-  size_t capacity(Shape shape, Type type = Type::float32) {
+  size_t capacity(Shape shape, Type type = Type::float32) const {
     return allocator_->capacity<char>(requiredBytes(shape, type));
   }
 
