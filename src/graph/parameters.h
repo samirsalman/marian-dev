@@ -84,7 +84,7 @@ public:
   }
 
   virtual void allocateForward() {
-    if(!params_.empty() && vals_->size() == 0) {
+    if(!params_.empty() && vals_ && vals_->size() == 0) {
       vals_->reserveExact(totalCapacity(vals_.get()));
 
       // sort parameters by name before allocation to make sure the memory layout after allocation is always the same
@@ -99,7 +99,7 @@ public:
   }
 
   virtual void allocateBackward() {
-    if(!params_.empty() && grads_->size() == 0) {
+    if(!params_.empty() && grads_ && grads_->size() == 0) {
 
       // sort parameters by name before allocation to make sure the memory layout after allocation is always the same
       std::sort(params_.begin(), params_.end(), [](Expr n1, Expr n2){ return n1->name() < n2->name(); });
@@ -121,8 +121,8 @@ public:
     params_.clear();
     named_.clear();
 
-    vals_->clear();
-    grads_->clear();
+    if (vals_) vals_->clear();
+    if (grads_) grads_->clear();
   }
 
   // Free the underlying memory but leave the parameters and names with dangling pointers.  Only use this if you're going to edit the memory pointers manually.
