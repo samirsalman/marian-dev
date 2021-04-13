@@ -29,7 +29,7 @@ DeviceId LookupGPU(const Ptr<Options> options, size_t deviceIdx) {
 } // namespace
 
 GPUEngine::GPUEngine(Ptr<Options> options, size_t deviceIdx) 
-  : options_(options), graph_(New<ExpressionGraph>()), myDeviceId_(LookupGPU(options, deviceIdx)), allocator_(myDeviceId_, 0, 128 * 1048576) {
+  : options_(options), graph_(New<ExpressionGraph>(true)), myDeviceId_(LookupGPU(options, deviceIdx)), allocator_(myDeviceId_, 0, 128 * 1048576) {
   ABORT_IF(myDeviceId_.type == DeviceType::cpu, "Swappable slot only works for GPU devices.");
   options_->set("inference", true);
   options_->set("shuffle", "none");
