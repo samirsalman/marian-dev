@@ -64,7 +64,7 @@ class GPULoadedModel {
     void Load(const CPULoadedModel &from);
     void Load(const GPULoadedModel &from);
 
-    Histories Translate(const std::vector<std::string> &input);
+    Histories Translate(const std::vector<std::string> &input, float max_length_factor = -1.f);
 };
 
 /* A model loaded on the CPU. */
