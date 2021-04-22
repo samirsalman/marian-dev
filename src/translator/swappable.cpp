@@ -151,7 +151,7 @@ CPULoadedModel::CPULoadedModel(Ptr<Options> options, const std::string &paramete
   trgVocab_->load(targetVocabPath);
 }
 
-void CPULoadedModel::CopyTo(const DeviceId &device, Ptr<ExpressionGraph> graph) const {
+void CPULoadedModel::CopyTo(Ptr<ExpressionGraph> graph) const {
     auto write_it = graph->params()->begin();
     auto read_it = parameters_.begin();
 
@@ -159,7 +159,7 @@ void CPULoadedModel::CopyTo(const DeviceId &device, Ptr<ExpressionGraph> graph) 
         swapper::copyCpuToGpu(
                 reinterpret_cast<char*>((*write_it)->val()->memory()->data()),
                 read_it->data(), read_it->size(),
-                device);
+                graph->getDeviceId());
     }
 }
 

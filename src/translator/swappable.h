@@ -78,7 +78,7 @@ class CPULoadedModel {
     // The parts of Options that relate to model and vocab are ignored.  The files provided will be loaded.
     CPULoadedModel(Ptr<Options> options, const std::string &parameters, const std::vector<std::string> &sourceVocabPaths, const std::string &targetVocabPath);
 
-    void CopyTo(const DeviceId &device, Ptr<ExpressionGraph> graph) const;
+    void CopyTo(Ptr<ExpressionGraph> graph) const;
 
     const std::vector<io::Item> &Parameters() const { return parameters_; }
 
