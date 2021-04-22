@@ -28,7 +28,7 @@ DeviceId LookupGPU(const Ptr<Options> options, size_t deviceIdx) {
 }
 } // namespace
 
-GPUEngine::GPUEngine(Ptr<Options> options, size_t deviceIdx) 
+GPUEngine::GPUEngine(Ptr<Options> options, size_t deviceIdx)
   : options_(options), graph_(New<ExpressionGraph>(true)), myDeviceId_(LookupGPU(options, deviceIdx)), allocator_(myDeviceId_, 0, 128 * 1048576) {
   ABORT_IF(myDeviceId_.type == DeviceType::cpu, "Swappable slot only works for GPU devices.");
   options_->set("inference", true);
@@ -149,6 +149,18 @@ CPULoadedModel::CPULoadedModel(Ptr<Options> options, const std::string &paramete
   // Load target vocab.
   trgVocab_ = New<Vocab>(options, sourceVocabPaths.size());
   trgVocab_->load(targetVocabPath);
+}
+
+void CPULoadedModel::CopyTo(const DeviceId &device, Ptr<ExpressionGraph> graph) const {
+    auto write_it = graph->params()->begin();
+    auto read_it = parameters_.begin();
+
+    for (; read_it != parameters_.end(); ++write_it, ++read_it) {
+        swapper::copyCpuToGpu(
+                reinterpret_cast<char*>((*write_it)->val()->memory()->data()),
+                read_it->data(), read_it->size(),
+                device);
+    }
 }
 
 } // namespace marian
