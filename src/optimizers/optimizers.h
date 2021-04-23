@@ -242,6 +242,15 @@ public:
     return shards;
   }
 
+  void restore(const std::vector<io::Item> &state) {
+      for (auto &item : state) {
+          if ("adam_mt" == item.name)
+              mt_->set(item);
+          else if ("adam_vt" == item.name)
+              vt_->set(item);
+      }
+  }
+
 private:
   void updateImpl(Tensor params, Tensor grads, size_t actualMBSize) override;
   void resetStats() override;
