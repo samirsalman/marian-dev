@@ -60,6 +60,8 @@ public:
     batchesSeen_ = state.batches;
   }
 
+  virtual void restore(const std::vector<io::Item> &state) {};
+
   virtual void actAfterLoaded(TrainingState& state) override {
     eta_ = state.eta;
     batchesSeen_ = state.batches;
@@ -198,10 +200,18 @@ public:
       eps_ = params[0];
   }
 
-  std::vector<Tensor> getShards() override { 
+  std::vector<Tensor> getShards() override {
     auto shards = OptimizerBase::getShards();
     shards.push_back(gt_);
     return shards;
+  }
+
+  void restore(const std::vector<io::Item> &state) override {
+    for (auto &item : state) {
+      if ("adagrad_gt" == item.name) {
+        if (gt_) gt_->set(item);
+      }
+    }
   }
 
 private:
@@ -242,13 +252,14 @@ public:
     return shards;
   }
 
-  void restore(const std::vector<io::Item> &state) {
-      for (auto &item : state) {
-          if ("adam_mt" == item.name)
-              mt_->set(item);
-          else if ("adam_vt" == item.name)
-              vt_->set(item);
+  void restore(const std::vector<io::Item> &state) override {
+    for (auto &item : state) {
+      if ("adam_mt" == item.name) {
+        if (mt_) mt_->set(item);
+      } else if ("adam_vt" == item.name) {
+        if (vt_) vt_->set(item);
       }
+    }
   }
 
 private:
