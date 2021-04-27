@@ -119,8 +119,8 @@ Histories GPULoadedModel::Translate(const std::vector<std::string> &input, float
   return ret;
 }
 
-CPULoadedModel::CPULoadedModel(Ptr<Options> options, const std::string &parameters, const std::vector<std::string> &sourceVocabPaths, const std::string &targetVocabPath)
-  : parameters_(io::loadItems(parameters)) {
+CPULoadedModel::CPULoadedModel(Ptr<Options> options, std::vector<io::Item> parameters, const std::vector<std::string> &sourceVocabPaths, const std::string &targetVocabPath)
+  : parameters_(std::move(parameters)) {
   // Load parameters.
   // Find the special element and remove it:
   size_t special_idx = 0;

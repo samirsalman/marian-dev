@@ -76,7 +76,10 @@ class CPULoadedModel {
 
   public:
     // The parts of Options that relate to model and vocab are ignored.  The files provided will be loaded.
-    CPULoadedModel(Ptr<Options> options, const std::string &parameters, const std::vector<std::string> &sourceVocabPaths, const std::string &targetVocabPath);
+    CPULoadedModel(Ptr<Options> options, const std::string &parameters, const std::vector<std::string> &sourceVocabPaths, const std::string &targetVocabPath)
+            : CPULoadedModel(std::move(options), io::loadItems(parameters), sourceVocabPaths, targetVocabPath) {};
+
+    CPULoadedModel(Ptr<Options> options, std::vector<io::Item> parameters, const std::vector<std::string> &sourceVocabPaths, const std::string &targetVocabPath);
 
     void CopyTo(Ptr<ExpressionGraph> graph) const;
 
