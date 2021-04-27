@@ -197,7 +197,7 @@ public:
 
   void setParams(const std::vector<float>& params) override {
     if(params.size() > 0)
-      eps_ = params[0];
+      def_eps_ = eps_ = params[0];
   }
 
   std::vector<Tensor> getShards() override {
@@ -207,17 +207,22 @@ public:
   }
 
   void restore(const std::vector<io::Item> &state) override {
+    OptimizerBase::restore(state);
+
     for (auto &item : state) {
       if ("adagrad_gt" == item.name) {
         if (gt_) gt_->set(item);
       }
     }
+
+    eps_ = def_eps_;
   }
 
 private:
   void updateImpl(Tensor params, Tensor grads, size_t actualMBSize) override;
   void resetStats() override;
 
+  float def_eps_ = 1e-8f;
   float eps_ = 1e-8f;
   Ptr<TensorAllocator> alloc_;
   Tensor gt_;
