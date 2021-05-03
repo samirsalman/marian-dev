@@ -163,4 +163,14 @@ void CPULoadedModel::CopyTo(Ptr<ExpressionGraph> graph) const {
     }
 }
 
+GPUSlot::GPUSlot(const Ptr<ExpressionGraph> &graph) : device(graph->getDeviceId()), allocator_(device, 0, 128 * 1048576) {
+    for (auto &param : *graph->params())
+        parameters_.push_back(allocator_.alloc(param->val()->memory()->size()));
+}
+
+GPUSlot::~GPUSlot() {
+    for (auto &param : parameters_)
+        allocator_.free(param);
+}
+
 } // namespace marian

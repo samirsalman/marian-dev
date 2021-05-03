@@ -90,4 +90,21 @@ class CPULoadedModel {
     Ptr<Vocab> TrgVocab() const { return trgVocab_; }
 };
 
+class GPUSlot {
+public:
+    const DeviceId device;
+
+    explicit GPUSlot(const Ptr<ExpressionGraph> &graph);
+
+    ~GPUSlot();
+
+    inline std::vector<MemoryPiece::PtrType> &params() {
+        return parameters_;
+    }
+
+private:
+    Allocator allocator_;
+    std::vector<MemoryPiece::PtrType> parameters_;
+};
+
 } // namespace marian
