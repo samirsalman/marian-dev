@@ -4,17 +4,7 @@
 #include "common/logging.h"
 namespace marian {
     namespace swapper {
-#ifdef CUDA_FOUND
         void copyCpuToGpu(char * gpuOut, const char * in, size_t count, const marian::DeviceId& deviceId);
         void copyGpuToGpu(char * gpuOut, const char * in, size_t count, const marian::DeviceId& deviceId);
-#else
-        inline void copyCpuToGpu(char * gpuOut, const char * in, size_t count, const marian::DeviceId& deviceId) {
-            ABORT("Copy from CPU to GPU memory is only available with CUDA.");
-        }
-
-        inline void copyGpuToGpu(char * gpuOut, const char * in, size_t count, const marian::DeviceId& deviceId) {
-            ABORT("Copy from GPU to GPU memory is only available with CUDA.");
-        }
-#endif
     }
 }
