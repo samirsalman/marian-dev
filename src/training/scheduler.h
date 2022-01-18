@@ -276,11 +276,13 @@ public:
   bool validating() {
     return (!validators_.empty()
             && state_->enteredNewPeriodOf(options_->get<std::string>("valid-freq"))
+            && state_->largerThan(options_->get<std::string>("valid-from"))
             && keepGoing());
   }
 
   bool saving() {
-    return state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"));
+    return (state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"))
+            && state_->largerThan(options_->get<std::string>("save-from")) );
   }
 
   bool syncing() {
