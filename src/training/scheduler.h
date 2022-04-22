@@ -276,6 +276,7 @@ public:
   bool validating() {
     return (!validators_.empty()
             && state_->enteredNewPeriodOf(options_->get<std::string>("valid-freq"))
+            && state_->largerThan(options_->get<std::string>("valid-from"))
             && keepGoing());
   }
 
@@ -284,7 +285,8 @@ public:
   }
 
   bool syncing() {
-    return state_->enteredNewPeriodOf(options_->get<std::string>("sync-freq", "0"));
+    return (state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"))
+            && state_->largerThan(options_->get<std::string>("save-from")) );
   }
 
   void validate(const std::vector<Ptr<ExpressionGraph>>& graphs,

@@ -96,6 +96,8 @@ configuration is done in 3 different files:
                      "--valid-freq 100",
                      "--save-freq 10000",
                      "--disp-freq 100",
+                     "--valid-from 500",
+                     "--save-from 15000",
                      "--valid-metrics cross-entropy translation",
                      "--valid-sets data/newsdev2016.bpe.ro data/newsdev2016.bpe.en",
                      "--valid-script-path .\\scripts\\validate.bat",
