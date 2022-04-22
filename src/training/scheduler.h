@@ -281,12 +281,12 @@ public:
   }
 
   bool saving() {
-    return state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"));
+    return (state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"))
+            && state_->largerThan(options_->get<std::string>("save-from")) );
   }
 
   bool syncing() {
-    return (state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"))
-            && state_->largerThan(options_->get<std::string>("save-from")) );
+    return state_->enteredNewPeriodOf(options_->get<std::string>("sync-freq", "0"));
   }
 
   void validate(const std::vector<Ptr<ExpressionGraph>>& graphs,

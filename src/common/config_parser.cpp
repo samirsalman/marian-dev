@@ -577,8 +577,8 @@ void ConfigParser::addOptionsValidation(cli::CLIWrapper& cli) {
   cli.add<size_t>("--early-stopping",
       "Stop if the first validation metric does not improve for  arg  consecutive validation steps",
       10);
-    cli.add<std::string>("--save-from",
-        "Save model not before arg updates (append 't' for every  arg  target labels)",
+    cli.add<std::string>("--valid-from",
+        "Validate model not before arg updates (append 't' for every arg target labels)",
         "10000u");
 
   // decoding options
