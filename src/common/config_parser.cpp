@@ -396,6 +396,9 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
       "Redefine logical epoch counter as multiple of data epochs (e.g. 1e), updates (e.g. 100Ku) or labels (e.g. 1Gt). "
       "Second parameter defines width of fractional display, 0 by default.",
       {"1e", "0"});
+  cli.add<std::string>("--save-from",
+      "Save model not before arg updates (append 't' for every  arg  target labels)",
+      "10000u");
 
   addSuboptionsInputLength(cli);
   addSuboptionsTSV(cli);
@@ -574,6 +577,9 @@ void ConfigParser::addOptionsValidation(cli::CLIWrapper& cli) {
   cli.add<size_t>("--early-stopping",
      "Stop if the first validation metric does not improve for  arg  consecutive validation steps",
      10);
+  cli.add<std::string>("--valid-from",
+      "Validate model not before arg updates (append 't' for every  arg  target labels)",
+      "10000u");
 
   // decoding options
   cli.add<size_t>("--beam-size,-b",
