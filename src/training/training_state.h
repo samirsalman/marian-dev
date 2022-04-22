@@ -152,6 +152,16 @@ public:
     return period && progress / period.n != previousProgress / period.n;
   }
 
+  // Tests whether the units are already larger than the minimal value specified by schedulingParam
+  bool largerThan(std::string schedulingParam) const {
+        auto period = SchedulingParameter::parse(schedulingParam);
+        ABORT_IF(period.unit == SchedulingUnit::epochs,
+                 "Unit {} is not supported for frequency parameters (the one(s) with value {})",
+                 schedulingParam);
+        auto progress = getProgressIn(period.unit);
+        return period && progress >= period.n;
+    }
+
   void newEpoch() {
     ++epochs;
     for(auto wObserver : wObservers_) {
