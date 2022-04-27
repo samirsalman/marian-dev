@@ -575,11 +575,11 @@ void ConfigParser::addOptionsValidation(cli::CLIWrapper& cli) {
   cli.add<bool>("--valid-reset-stalled",
      "Reset all stalled validation metrics when the training is restarted");
   cli.add<size_t>("--early-stopping",
-     "Stop if the first validation metric does not improve for  arg  consecutive validation steps",
-     10);
-  cli.add<std::string>("--valid-from",
-      "Validate model not before arg updates (append 't' for every  arg  target labels)",
-      "10000u");
+      "Stop if the first validation metric does not improve for  arg  consecutive validation steps",
+      10);
+    cli.add<std::string>("--valid-from",
+        "Validate model not before arg updates (append 't' for every arg target labels)",
+        "10000u");
 
   // decoding options
   cli.add<size_t>("--beam-size,-b",

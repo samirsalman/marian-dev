@@ -154,13 +154,13 @@ public:
 
   // Tests whether the units are already larger than the minimal value specified by schedulingParam
   bool largerThan(std::string schedulingParam) const {
-        auto from = SchedulingParameter::parse(schedulingParam);
-        ABORT_IF(period.unit == SchedulingUnit::epochs,
-                 "Unit {} is not supported for frequency parameters (the one(s) with value {})",
-                 schedulingParam);
-        auto progress = getProgressIn(period.unit);
-        return from && progress >= from.n;
-    }
+    auto from = SchedulingParameter::parse(schedulingParam);
+    ABORT_IF(from.unit == SchedulingUnit::epochs,
+             "Unit {} is not supported for frequency parameters (the one(s) with value {})",
+             schedulingParam);
+    auto progress = getProgressIn(from.unit);
+    return from && progress >= from.n;
+  }
 
   void newEpoch() {
     ++epochs;
