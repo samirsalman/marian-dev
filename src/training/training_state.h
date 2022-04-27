@@ -159,7 +159,7 @@ public:
              "Unit {} is not supported for frequency parameters (the one(s) with value {})",
              schedulingParam);
     auto progress = getProgressIn(from.unit);
-    return from && progress >= from.n;
+    return from.n >= 0 && progress >= from.n;
   }
 
   void newEpoch() {
