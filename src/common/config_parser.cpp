@@ -398,7 +398,7 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
       {"1e", "0"});
   cli.add<std::string>("--save-from",
       "Save model not before arg updates (append 't' for every  arg  target labels)",
-      "10000u");
+      "0u");
 
   addSuboptionsInputLength(cli);
   addSuboptionsTSV(cli);
@@ -579,7 +579,7 @@ void ConfigParser::addOptionsValidation(cli::CLIWrapper& cli) {
       10);
     cli.add<std::string>("--valid-from",
         "Validate model not before arg updates (append 't' for every arg target labels)",
-        "10000u");
+        "0u");
 
   // decoding options
   cli.add<size_t>("--beam-size,-b",
