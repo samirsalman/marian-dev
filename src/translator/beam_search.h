@@ -28,6 +28,8 @@ public:
         INVALID_PATH_SCORE{chooseInvalidPathScore(options)}
   {}
 
+  inline void setBeamSize(size_t value) { beamSize_ = value; }
+
   // combine new expandedPathScores and previous beams into new set of beams
   Beams toHyps(const std::vector<unsigned int>& nBestKeys, // [currentDimBatch, beamSize] flattened -> ((batchIdx, beamHypIdx) flattened, word idx) flattened
                const std::vector<float>& nBestPathScores,  // [currentDimBatch, beamSize] flattened
