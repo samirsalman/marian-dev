@@ -233,10 +233,22 @@ public:
 
     // stop if the first validator did not improve for a given number of checks
     size_t stopAfterStalled = options_->get<size_t>("early-stopping");
-    if(stopAfterStalled > 0 && !validators_.empty()
-       && stalled() >= stopAfterStalled)
-      return false;
-
+    if(stopAfterStalled > 0 && !validators_.empty()) {
+        if (mpi_ && mpi_->myMPIRank() == 0) {
+          // virtual checkpointing
+          if (stalled() == 5 || stalled() == 10 || stalled() == 15 || stalled() == 20)  {
+            std::string direction = "en__it";
+            std::string train_log = "runtime/default/tmp/training/_temp_train/train_dir/train.log";
+            std::string train_dir = "runtime/default/tmp/training/_temp_train/train_dir";
+            std::string datagen_path = "runtime/default/tmp/training/data_generated";
+            std::string output_path = "engines/patience_" + std::to_string(stalled()) + "/models/decoder/" + direction;
+            std::string _cmd = "python3 -m utilities.pack_models " + train_log + " " + train_dir + " " + datagen_path + " " + output_path;
+            system(_cmd.c_str());
+          }
+        }
+        if (stalled() >= stopAfterStalled)
+          return false;
+    }
     // stop if data streaming from STDIN is stopped
     if(endOfStdin_)
       return false;
