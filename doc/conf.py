@@ -37,11 +37,11 @@ release = version + ' ' + str(datetime.date.today())
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.imgmath',
+    'sphinx.ext.mathjax',
     'sphinx.ext.todo',
     'breathe',
     'exhale',
-    'recommonmark',
+    'myst_parser',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -57,6 +57,13 @@ exclude_patterns = [
     'README.md',
 ]
 
+# The file extensions of source files. Sphinx considers the files with
+# this suffix as sources. By default, Sphinx only supports 'restructuredtext'
+# file type. You can add a new file type using source parser extensions.
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.md': 'markdown',
+}
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -91,6 +98,7 @@ EXTENSION_MAPPING   += cu=C++ inc=C++
 ENABLE_PREPROCESSING = YES
 JAVADOC_AUTOBRIEF    = YES
 WARN_IF_UNDOCUMENTED = NO
+USE_MATHJAX          = YES
 """
 
 exhale_args = {
@@ -100,21 +108,9 @@ exhale_args = {
     'doxygenStripFromPath'  : '..',
     'createTreeView'        : True,
     'exhaleExecutesDoxygen' : True,
+    # 'verboseBuild'          : True, # set True for debugging
     'exhaleDoxygenStdin'    : doxygen_config.strip(),
 }
 
 primary_domain = 'cpp'
 highlight_language = 'cpp'
-
-# A trick to include markdown files from outside the source directory using
-# 'mdinclude'. Warning: all other markdown files not included via 'mdinclude'
-# will be rendered using recommonmark as recommended by Sphinx
-from m2r import MdInclude
-
-def setup(app):
-    # from m2r to make `mdinclude` work
-    app.add_config_value('no_underscore_emphasis', False, 'env')
-    app.add_config_value('m2r_parse_relative_links', False, 'env')
-    app.add_config_value('m2r_anonymous_references', False, 'env')
-    app.add_config_value('m2r_disable_inline_math', False, 'env')
-    app.add_directive('mdinclude', MdInclude)

@@ -19,6 +19,8 @@ namespace marian {
  * As aliases are key-value pairs by default, values are compared as std::string. 
  * If the command line option corresponding to the alias is a vector, the alias 
  * will be triggered if the requested value exists in that vector at least once.
+ * By design if an option value that is not defined for that alias option below
+ * is used, the CLI parser will abort with 'unknown value for alias' error.
  *
  * @see CLIWrapper::alias()
  *
@@ -29,8 +31,8 @@ void ConfigParser::addAliases(cli::CLIWrapper& cli) {
   cli.alias("fp16", "true", [&](YAML::Node& config) {
     if(mode_ == cli::mode::training) {
       config["precision"] = std::vector<std::string>({"float16", "float32"}); // inference type, optimization type, save type
-      // scaling factor (power of 2), frequency, multiplier at increase, tolerance, range, minium factor
-      config["cost-scaling"] = std::vector<std::string>({"0", "1000", "2", "0.05", "10", "1e-5"}); 
+      // scaling factor, frequency, multiplier at increase, minium scaling factor
+      config["cost-scaling"] = std::vector<std::string>({"8.f", "10000", "1.f", "8.f"});
     } else {
       config["precision"] = std::vector<std::string>({"float16"}); // for inference we do not need the other types
     }
@@ -44,6 +46,7 @@ void ConfigParser::addAliases(cli::CLIWrapper& cli) {
 
     // Options setting the BiDeep architecture proposed in http://www.aclweb.org/anthology/W17-4710
     cli.alias("best-deep", "true", [](YAML::Node& config) {
+      config["type"] = "s2s";
       config["layer-normalization"] = true;
       config["tied-embeddings"] = true;
       config["enc-type"] = "alternating";
@@ -223,6 +226,34 @@ void ConfigParser::addAliases(cli::CLIWrapper& cli) {
       config["beam-size"] = 8;
       config["valid-mini-batch"] = 8;
       config["normalize"] = 1.0;
+    });
+
+    // Model architecture for Unbabel's COMET-QE models
+    cli.alias("task", "comet-qe", [](YAML::Node& config) {
+      // Model options
+      config["bert-train-type-embeddings"] = false;
+      config["bert-type-vocab-size"] = 0;
+      config["comet-final-sigmoid"] = true;
+      config["comet-mix"] = false;
+      config["comet-mix-norm"] = false;
+      config["comet-dropout"] = 0.1;
+      config["comet-pooler-ffn"] = std::vector<int>({2048, 1024});
+      config["comet-prepend-zero"] = true;
+      config["dim-emb"] = 1024;
+      config["dim-vocabs"] = std::vector<int>({250000});
+      config["enc-depth"] = 24;
+      config["max-length"] = 512;
+      config["valid-max-length"] = 512;
+      config["tied-embeddings-all"] = true;
+      config["transformer-dim-ffn"] = 4096;
+      config["transformer-ffn-activation"] = "gelu";
+      config["transformer-ffn-depth"] = 2;
+      config["transformer-heads"] = 16;
+      config["transformer-postprocess"] = "dan";
+      config["transformer-postprocess-emb"] = "nd";
+      config["transformer-preprocess"] = "";
+      config["transformer-train-position-embeddings"] = true;
+      config["type"] = "comet-qe";
     });
   }
 }

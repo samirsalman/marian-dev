@@ -12,6 +12,12 @@ namespace marian {
 class IEncoderDecoder : public models::IModel {
 public:
   virtual ~IEncoderDecoder() {}
+
+  virtual void load(Ptr<ExpressionGraph> graph,
+                    const std::vector<io::Item>& items,
+                    bool markedReloaded = true) override 
+      = 0;
+
   virtual void load(Ptr<ExpressionGraph> graph,
                     const std::string& name,
                     bool markedReloaded = true) override
@@ -90,6 +96,10 @@ public:
   std::vector<Ptr<DecoderBase>>& getDecoders();
 
   void push_back(Ptr<DecoderBase> decoder);
+
+  virtual void load(Ptr<ExpressionGraph> graph,
+                    const std::vector<io::Item>& items,
+                    bool markedReloaded = true) override;
 
   virtual void load(Ptr<ExpressionGraph> graph,
                     const std::string& name,

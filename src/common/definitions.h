@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#define THREAD_GUARD(body) [&]() { body; }() // test if THREAD_GUARD is neccessary, remove if no problems occur.
+#define THREAD_GUARD(body) [&]() { body; }() // test if THREAD_GUARD is necessary, remove if no problems occur.
 #define NodeOp(op) [=]() { op; }
 
 // helper macro to disable optimization (gcc only)
@@ -106,24 +106,24 @@ using Weak = std::weak_ptr<T>;
 /** @brief Creates shared_ptr of any type, passes all arguments to any available
  * constructor */
 template <class T, typename... Args>
-Ptr<T> New(Args&&... args) {
-  return Ptr<T>(new T(std::forward<Args>(args)...));
+inline Ptr<T> New(Args&&... args) {
+  return std::make_shared<T>(std::forward<Args>(args)...);
 }
 
 template <class T>
-Ptr<T> New(Ptr<T> p) {
+inline Ptr<T> New(Ptr<T> p) {
   return Ptr<T>(p);
 }
 
 /** @brief Creates InstrusivePtr of any type, passes all arguments to any available
  * constructor */
 template <class T, typename... Args>
-IPtr<T> INew(Args&&... args) {
+inline IPtr<T> INew(Args&&... args) {
   return IPtr<T>(new T(std::forward<Args>(args)...));
 }
 
 template <class T>
-IPtr<T> INew(Ptr<T> p) {
+inline IPtr<T> INew(Ptr<T> p) {
   return IPtr<T>(p);
 }
 
@@ -193,6 +193,14 @@ typedef Ptr<ClipperBase> ClipperBasePtr;
 class RunBase;
 typedef Ptr<RunBase> RunBasePtr;
 
-
 const float NEMATUS_LN_EPS = 1e-5f;
+
+// With -Ofast enabled gcc will fail to identify NaN or Inf. Safeguard here.
+static inline bool isFinite(float x) {
+#ifdef __GNUC__
+  ABORT_IF(std::isfinite(0.f / 0.f), "NaN detection unreliable. Disable -Ofast compiler option.");
+#endif
+  return std::isfinite(x);
+}
+
 }  // namespace marian

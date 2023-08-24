@@ -23,6 +23,23 @@ void ExpressionGraph::setDevice(DeviceId deviceId, Ptr<Device> device) {
   }
 }
 
+void ExpressionGraph::reserveWorkspaceMB(int num) {
+  size_t bytes;
+  if(num > 0) {
+    bytes = (size_t)num * 1024 * 1024 - 1;
+  } else if (num < 0) {
+    ABORT_IF(getDeviceId().type == DeviceType::cpu, "Negative workspace not allowed on CPU device");
+    size_t globalMemorySize = backend_->getGlobalMemorySize(); // in bytes, only implemented for GPU backend
+    size_t notWorkspaceSize = (size_t)std::abs(num) * 1024 * 1024 - 1;
+    ABORT_IF(notWorkspaceSize >= globalMemorySize, "Negative workspace {} larger/equal total memory {}?", notWorkspaceSize, globalMemorySize);
+    bytes = globalMemorySize - notWorkspaceSize;
+    LOG(debug, "Reserving {} = {} - {} bytes as workspace", bytes, globalMemorySize, notWorkspaceSize);
+  } else {
+    ABORT("Allocating 0 bytes?");
+  }
+  tensors_->reserve(bytes);
+}
+
 Expr ExpressionGraph::add(Expr node) {
   auto found = tensors_->findOrRemember(node);
   if(found) {
@@ -45,6 +62,14 @@ Expr ExpressionGraph::add(Expr node) {
 
     return node;
   }
+}
+
+/**
+ * Removes the node from the set of roots (will not be initialized during back propagation)
+ * @param node a pointer to a expression node
+ */
+void ExpressionGraph::removeAsRoot(Expr node) {
+  topNodes_.erase(node);
 }
 
 // Call on every checkpoint in backwards order
@@ -131,7 +156,7 @@ void ExpressionGraph::forward(std::list<Expr>& forwardTape, bool finalPass) {
     if(v->marked_for_debug()) {
       Logger log = spdlog::get("general");
       if(log) {
-        LOG(info, "Debug: {} op={}", v->debug_message(), v->type());
+        LOG(info, "Debug: {} op={} name={}", v->debug_message(), v->type(), v->name());
         LOG(info, v->val()->debug());
       }
       else {
@@ -208,8 +233,15 @@ void ExpressionGraph::backward(bool reset, float clipValue) {
     }
 
     if(v->trainable() && v->marked_for_debug()) {
-      LOG(info, "Debug Grad: {} op={}", v->debug_message(), v->type());
-      LOG(info, v->grad()->debug());
+      Logger log = spdlog::get("general");
+      if(log) {
+        LOG(info, "Debug Grad: {} op={}", v->debug_message(), v->type());
+        LOG(info, v->grad()->debug());
+      }
+      else {
+        std::cerr << "Debug Grad: " << v->debug_message() << " op=" << v->type() << std::endl;
+        std::cerr << v->grad()->debug() << std::endl;
+      }
     }
 
     if(v->trainable() && clipValue != 0) {

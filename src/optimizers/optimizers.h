@@ -60,6 +60,8 @@ public:
     batchesSeen_ = state.batches;
   }
 
+  virtual void restore(const std::vector<io::Item> &state) {};
+
   virtual void actAfterLoaded(TrainingState& state) override {
     eta_ = state.eta;
     batchesSeen_ = state.batches;
@@ -114,6 +116,10 @@ public:
   // This function swaps out the current optimizer parameters with the smoothed version (provided smoothing is enabled).
   // Usually we will call this twice, to swap in and to swap out.
   void swapWithSmoothed(Tensor params);
+  
+  // This function replaces the current optimizer parameters with the smoothed version (provided smoothing is enabled).
+  // This is different from swapping (swapping twice restores original state) as the original parameters get overwritten. 
+  void replaceWithSmoothed(Tensor params);
 
   // return stateful optimizer shards, for base that's only averaged parameters
   virtual std::vector<Tensor> getShards() { 
@@ -195,19 +201,32 @@ public:
 
   void setParams(const std::vector<float>& params) override {
     if(params.size() > 0)
-      eps_ = params[0];
+      def_eps_ = eps_ = params[0];
   }
 
-  std::vector<Tensor> getShards() override { 
+  std::vector<Tensor> getShards() override {
     auto shards = OptimizerBase::getShards();
     shards.push_back(gt_);
     return shards;
+  }
+
+  void restore(const std::vector<io::Item> &state) override {
+    OptimizerBase::restore(state);
+
+    for (auto &item : state) {
+      if ("adagrad_gt" == item.name) {
+        if (gt_) gt_->set(item);
+      }
+    }
+
+    eps_ = def_eps_;
   }
 
 private:
   void updateImpl(Tensor params, Tensor grads, size_t actualMBSize) override;
   void resetStats() override;
 
+  float def_eps_ = 1e-8f;
   float eps_ = 1e-8f;
   Ptr<TensorAllocator> alloc_;
   Tensor gt_;
@@ -240,6 +259,16 @@ public:
     shards.push_back(mt_);
     shards.push_back(vt_);
     return shards;
+  }
+
+  void restore(const std::vector<io::Item> &state) override {
+    for (auto &item : state) {
+      if ("adam_mt" == item.name) {
+        if (mt_) mt_->set(item);
+      } else if ("adam_vt" == item.name) {
+        if (vt_) vt_->set(item);
+      }
+    }
   }
 
 private:

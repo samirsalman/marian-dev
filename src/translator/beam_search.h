@@ -3,6 +3,7 @@
 #include "marian.h"
 #include "translator/history.h"
 #include "translator/scorers.h"
+#include "translator/nth_element.h"
 
 namespace marian {
 
@@ -28,6 +29,8 @@ public:
         INVALID_PATH_SCORE{chooseInvalidPathScore(options)}
   {}
 
+  inline void setBeamSize(size_t value) { beamSize_ = value; }
+
   // combine new expandedPathScores and previous beams into new set of beams
   Beams toHyps(const std::vector<unsigned int>& nBestKeys, // [currentDimBatch, beamSize] flattened -> ((batchIdx, beamHypIdx) flattened, word idx) flattened
                const std::vector<float>& nBestPathScores,  // [currentDimBatch, beamSize] flattened
@@ -52,7 +55,7 @@ public:
   Beams purgeBeams(const Beams& beams, /*in/out=*/std::vector<IndexType>& batchIdxMap);
 
   // main decoding function
-  Histories search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch);
+  Histories search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch, float max_length_factor = -1.f);
 };
 
 }  // namespace marian

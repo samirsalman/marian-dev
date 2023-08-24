@@ -14,7 +14,7 @@ namespace marian {
  * Can be used to train sequence classifiers like language detection, BERT-next-sentence-prediction etc.
  * Already has support for multi-objective training.
  *
- * @TODO: this should probably be unified somehow with EncoderDecoder which could allow for deocder/classifier
+ * @TODO: this should probably be unified somehow with EncoderDecoder which could allow for decoder/classifier
  * multi-objective training.
  */
 class EncoderClassifierBase : public models::IModel {
@@ -116,6 +116,7 @@ public:
 
     modelFeatures_.insert("transformer-heads");
     modelFeatures_.insert("transformer-no-projection");
+    modelFeatures_.insert("transformer-rnn-projection");
     modelFeatures_.insert("transformer-dim-ffn");
     modelFeatures_.insert("transformer-ffn-depth");
     modelFeatures_.insert("transformer-ffn-activation");
@@ -139,6 +140,9 @@ public:
     modelFeatures_.insert("ulr-trainable-transformation");
     modelFeatures_.insert("ulr-dim-emb");
     modelFeatures_.insert("lemma-dim-emb");
+    modelFeatures_.insert("lemma-dependency");
+    modelFeatures_.insert("factors-combine");
+    modelFeatures_.insert("factors-dim-emb");
   }
 
   virtual Ptr<Options> getOptions() override { return options_; }
@@ -148,6 +152,12 @@ public:
 
   void push_back(Ptr<EncoderBase> encoder) { encoders_.push_back(encoder); }
   void push_back(Ptr<ClassifierBase> classifier) { classifiers_.push_back(classifier); }
+
+  void load(Ptr<ExpressionGraph> graph,
+            const std::vector<io::Item>& items,
+            bool markedReloaded) override {
+    graph->load(items, markedReloaded && !opt<bool>("ignore-model-config", false));
+  }
 
   void load(Ptr<ExpressionGraph> graph,
             const std::string& name,

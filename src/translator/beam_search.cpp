@@ -1,9 +1,9 @@
-#include "translator/beam_search.h"
-
+#include "common/utils.h"
 #include "data/factored_vocab.h"
-#include "translator/helpers.h"
-#include "translator/nth_element.h"
 #include "data/shortlist.h"
+#include "translator/beam_search.h"
+#include "translator/helpers.h"
+#include "translator/sampling.h"
 
 namespace marian {
 
@@ -50,7 +50,6 @@ Beams BeamSearch::toHyps(const std::vector<unsigned int>& nBestKeys, // [current
     const auto beamHypIdx      = (key / vocabSize) % nBestBeamSize;
     const auto currentBatchIdx = (key / vocabSize) / nBestBeamSize;
     const auto origBatchIdx    = reverseBatchIdxMap.empty() ? currentBatchIdx : reverseBatchIdxMap[currentBatchIdx]; // map currentBatchIdx back into original position within starting maximal batch size, required to find correct beam
-
     bool dropHyp = !dropBatchEntries.empty() && dropBatchEntries[origBatchIdx] && factorGroup == 0;
     
     WordIndex wordIdx;
@@ -94,7 +93,7 @@ Beams BeamSearch::toHyps(const std::vector<unsigned int>& nBestKeys, // [current
       // For factored decoding, the word is built over multiple decoding steps,
       // starting with the lemma, then adding factors one by one.
       if (factorGroup == 0) {
-        word = factoredVocab->lemma2Word(shortlist ? shortlist->reverseMap(wordIdx) : wordIdx); // @BUGBUG: reverseMap is only correct if factoredVocab_->getGroupRange(0).first == 0
+        word = factoredVocab->lemma2Word(shortlist ? shortlist->reverseMap((int) prevBeamHypIdx, (int) currentBatchIdx, wordIdx) : wordIdx);
         std::vector<size_t> factorIndices; factoredVocab->word2factors(word, factorIndices);
         //LOG(info, "{} + {} ({}) -> {} -> {}",
         //    factoredVocab->decode(prevHyp->tracebackWords()),
@@ -115,7 +114,7 @@ Beams BeamSearch::toHyps(const std::vector<unsigned int>& nBestKeys, // [current
       }
     }
     else if (shortlist)
-      word = Word::fromWordIndex(shortlist->reverseMap(wordIdx));
+      word = Word::fromWordIndex(shortlist->reverseMap((int) prevBeamHypIdx, (int) currentBatchIdx, wordIdx));
     else
       word = Word::fromWordIndex(wordIdx);
 
@@ -248,7 +247,10 @@ Beams BeamSearch::purgeBeams(const Beams& beams, /*in/out=*/std::vector<IndexTyp
 
 //**********************************************************************
 // main decoding function
-Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch) {
+Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch, float max_length_factor) {
+  if (max_length_factor < 0)
+    max_length_factor = options_->get<float>("max-length-factor");
+
   auto factoredVocab = trgVocab_->tryAs<FactoredVocab>();
   size_t numFactorGroups = factoredVocab ? factoredVocab->getNumGroups() : 1;
   if (numFactorGroups == 1) // if no factors then we didn't need this object in the first place
@@ -308,13 +310,15 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
       suppressed.erase(std::remove_if(suppressed.begin(), 
                                       suppressed.end(), 
                                       [&](WordIndex i) { 
-                                        return shortlist->tryForwardMap(i) == data::Shortlist::npos; 
+                                        return shortlist->tryForwardMap(i) == data::Shortlist::npos;
                                       }),
                        suppressed.end());
     
     if(!suppressed.empty())
       suppressedWordIndices = graph->indices(suppressed);
   }
+
+  auto distMod = New<DistModifier>(options_, batch, INVALID_PATH_SCORE);
 
   // the decoding process updates the following state information in each output time step:
   //  - beams: array [origDimBatch] of array [maxBeamSize] of Hypothesis
@@ -330,6 +334,7 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
   auto prevBatchIdxMap = batchIdxMap; // [origBatchIdx -> currentBatchIdx] but shifted by one time step
   // main loop over output time steps
   for (size_t t = 0; ; t++) {
+    //std::cerr << "\nstep=" << t << std::endl;
     ABORT_IF(origDimBatch != beams.size(), "Lost a batch entry??");
     // determine beam size for next output time step, as max over still-active sentences
     // E.g. if all batch entries are down from beam 5 to no more than 4 surviving hyps, then
@@ -412,9 +417,9 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
 
       //**********************************************************************
       // compute expanded path scores with word prediction probs from all scorers
-      auto expandedPathScores = prevPathScores; // will become [maxBeamSize, 1, currDimBatch, dimVocab]
-      Expr logProbs;
+      Expr stepScores;
       for(size_t i = 0; i < scorers_.size(); ++i) {
+        Expr logProbs;
         if (factorGroup == 0) {
           // compute output probabilities for current output time step
           //  - uses hypIndices[index in beam, 1, batch index, 1] to reorder scorer state to reflect the top-N in beams[][]
@@ -448,10 +453,19 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
           logProbs = states[i]->getLogProbs().getFactoredLogits(factorGroup, /*shortlist=*/ nullptr, hypIndices, maxBeamSize); // [maxBeamSize, 1, currentDimBatch, dimVocab]
         }
         // expand all hypotheses, [maxBeamSize, 1, currentDimBatch, 1] -> [maxBeamSize, 1, currentDimBatch, dimVocab]
-        expandedPathScores = expandedPathScores + scorers_[i]->getWeight() * logProbs;
+        if(i == 0)
+          stepScores = scorers_[i]->getWeight() * logProbs;
+        else
+          stepScores = stepScores + scorers_[i]->getWeight() * logProbs;
+      }
+
+      if(factorGroup == 0) {
+        stepScores = distMod->force(stepScores, (int)t, (int)maxBeamSize, batchIndices);
+        stepScores = distMod->sample(stepScores);
       }
 
       // make beams continuous
+      auto expandedPathScores = prevPathScores + stepScores; // will become [maxBeamSize, 1, currDimBatch, dimVocab]
       expandedPathScores = swapAxes(expandedPathScores, 0, 2); // -> [currentDimBatch, 1, maxBeamSize, dimVocab]
 
       // perform NN computation
@@ -462,6 +476,7 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
 
       //**********************************************************************
       // suppress specific symbols if not at right positions
+      // @TODO: move this to DistributionModifier
       if(suppressedWordIndices && factorGroup == 0)
         suppressWords(expandedPathScores, suppressedWordIndices);
 
@@ -476,6 +491,7 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
                   /*out*/   nBestPathScores,
                    /*out*/  nBestKeys,
                   /*first=*/t == 0 && factorGroup == 0); // @TODO: this is only used for checking presently, and should be removed altogether
+
       // Now, nBestPathScores contain N-best expandedPathScores for each batch and beam,
       // and nBestKeys for each their original location (batchIdx, beamHypIdx, word).
 
@@ -503,7 +519,7 @@ Histories BeamSearch::search(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> 
     for(int batchIdx = 0; batchIdx < origDimBatch; ++batchIdx) {
       // if this batch entry has surviving hyps then add them to the traceback grid
       if(!beams[batchIdx].empty()) { // if the beam is not empty expand the history object associated with the beam
-        if (histories[batchIdx]->size() >= options_->get<float>("max-length-factor") * batch->front()->batchWidth())
+        if (histories[batchIdx]->size() >= max_length_factor * batch->front()->batchWidth())
           maxLengthReached = true;
         histories[batchIdx]->add(beams[batchIdx], trgEosId, purgedNewBeams[batchIdx].empty() || maxLengthReached);
       }

@@ -131,20 +131,20 @@ void TensorBase::get(io::Item& item, const std::string& name) {
 void TensorBase::set(const io::Item& item) {
   ABORT_IF(item.type != type_, "Tensor type {} and item type {} do not match", type_, item.type);
   ABORT_IF(item.shape != shape_, "Tensor shape {} and item shape {} do not match", shape_, item.shape);
-  ABORT_IF(item.bytes.size() > memory_->size(), "Item data size {} too large for memory {}", item.bytes.size(), memory_->size());
+  ABORT_IF(item.size() > memory_->size(), "Item data size {} too large for memory {}", item.size(), memory_->size());
   copy(backend_,
-       item.bytes.data(),
-       item.bytes.data() + item.bytes.size(),
+       item.data(),
+       item.data() + item.size(),
        memory_->data<char>());
 }
 
-size_t TensorBase::hash() {
-  io::Item temp;
-  size_t seed = 0;
-  get(temp, "temp");
-  for(auto c : temp.bytes)
-    util::hash_combine(seed, c);
-  return seed;
+size_t TensorBase::hash(size_t seed, Ptr<Allocator> allocator) {
+#ifdef CUDA_FOUND
+  if(backend_->getDeviceId().type == DeviceType::gpu)
+    return marian::gpu::hashTensor(this, (uint32_t)seed, allocator);
+  else // we assmume CPU
+#endif
+    return marian::util::hashMem(memory_->data<char>(), memory_->size(), seed);
 }
 
 }  // namespace marian

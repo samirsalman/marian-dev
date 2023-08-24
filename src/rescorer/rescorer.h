@@ -73,7 +73,7 @@ public:
       auto precison = options_->get<std::vector<std::string>>("precision", {"float32"});
       graph->setDefaultElementType(typeFromString(precison[0])); // only use first type, used for parameter type in graph
       graph->setDevice(device);
-      graph->reserveWorkspaceMB(options_->get<size_t>("workspace"));
+      graph->reserveWorkspaceMB(options_->get<int>("workspace"));
       graphs_.push_back(graph);
     }
 
@@ -200,16 +200,6 @@ public:
                 sentScore = 0.f;
               }
             }
-          }
-
-          // progress heartbeat for MS-internal Philly compute cluster
-          // otherwise this job may be killed prematurely if no log for 4 hrs
-          if (getenv("PHILLY_JOB_ID")   // this environment variable exists when running on the cluster
-              && id % 1000 == 0)  // hard beat once every 1000 batches
-          {
-            auto progress = id / 10000.f; //fake progress for now, becomes >100 after 1M batches
-            fprintf(stdout, "PROGRESS: %.2f%%\n", progress);
-            fflush(stdout);
           }
         };
 

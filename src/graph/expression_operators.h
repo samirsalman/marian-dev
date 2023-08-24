@@ -16,22 +16,34 @@ Expr debug(Expr a, const std::string& message = "");
  */
 Expr checkpoint(Expr a);
 
+/**
+ * Removes the node from the set of root nodes, no-op otherwise
+ */
+Expr removeAsRoot(Expr node);
+
 typedef Expr(ActivationFunction)(Expr);  ///< ActivationFunction has signature Expr(Expr)
 
 /**
- * Convience typedef for graph @ref lambda expressions.
+ * Convenience typedef for graph @ref lambda expressions.
  */
 typedef std::function<void(Expr out, const std::vector<Expr>& in)> LambdaNodeFunctor;
 
 /**
  * Arbitrary node with forward operation only.
  */
-Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type, LambdaNodeFunctor fwd);
+Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type, LambdaNodeFunctor fwd, size_t hash = 0);
 
 /**
  * Arbitrary node with forward and backward operation.
  */
-Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type, LambdaNodeFunctor fwd, LambdaNodeFunctor bwd);
+Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type, LambdaNodeFunctor fwd, LambdaNodeFunctor bwd, size_t hash = 0);
+
+
+/**
+ * Convience typedef for graph @ref lambda expressions.
+ */
+typedef std::function<void(Expr)> LambdaNodeCallback;
+Expr callback(Expr node, LambdaNodeCallback call);
 
 /**
  * @addtogroup graph_ops_activation Activation Functions
@@ -107,7 +119,7 @@ Expr tanh(const std::vector<Expr>& nodes);
 
 /**
  * @copybrief tanh
- * Convience function to put parameter pack @p Args into a Expr vector
+ * Convenience function to put parameter pack @p Args into a Expr vector
  */
 template <typename... Args>
 Expr tanh(Args... args) {
@@ -181,8 +193,7 @@ Expr prelu(const std::vector<Expr>&, float alpha = 0.01);
  * @{
  */
 
-///@name Exponentiation and Logarithmic functions
-///@{
+// Exponentiation and Logarithmic functions
 /**
  * Natural logarithm.
  * Computes the element-wise natural logarithm of the expression: @f$ \log(a) @f$
@@ -196,10 +207,8 @@ Expr log(Expr a);
  * @see ExpNodeOp
  */
 Expr exp(Expr a);
-///@}
 
-///@name Trigonometric functions
-///@{
+// Trigonometric functions
 /**
 * Sine. Computes the element-wise sine of the expression: @f$ \sin(a) @f$.
 * @see SinNodeOp
@@ -218,7 +227,6 @@ Expr cos(Expr a);
 */
 Expr tan(Expr a);
 ///@}
-///@}
 
 /**
  * @addtogroup graph_ops_arithmetic Arithmetic
@@ -231,52 +239,42 @@ Expr tan(Expr a);
  * Returns @f$ -a @f$.
  * @see NegNodeOp for implementation.
  */
-///@{
 Expr operator-(Expr a);
-///@}
 
 /*********************************************************/
 
 /**
- * @name Addition
+ * Addition
  * Performs @f$ a + b @f$ in the expression graph.
 */
-///@{
 Expr operator+(Expr a, Expr b);   ///< @see Implementation in PlusNodeOp
 Expr operator+(float a, Expr b);  ///< @see Implementation in ScalarAddNodeOp
 Expr operator+(Expr a, float b);  ///< @see Implementation in ScalarAddNodeOp
-///@}
 
 /**
- * @name Subtraction
+ * Subtraction
  * Performs @f$ a - b @f$ in the expression graph.
  */
-///@{
 Expr operator-(Expr a, Expr b);   ///< @see Implementation in MinusNodeOp
 Expr operator-(float a, Expr b);  ///< @see Implementation in ScalarAddNodeOp
 Expr operator-(Expr a, float b);  ///< @see Implementation in ScalarAddNodeOp
-///@}
 
 /**
- * @name Multiplication
+ * Multiplication
  * Performs @f$ a * b @f$ in the expression graph.
  */
-///@{
 Expr operator*(Expr a, Expr b);   ///< @see Implementation in MultNodeOp
 Expr operator*(float a, Expr b);  ///< @see Implementation in ScalarMultNodeOp
 Expr operator*(Expr a, float b);  ///< @see Implementation in ScalarMultNodeOp
-///@}
 
 /**
- * @name Division
+ * Division
  * Performs @f$ a / b @f$ in the expression graph.
  */
-///@{
 Expr operator/(Expr a, Expr b);   ///< @see Implementation in DivNodeOp
 Expr operator/(float a, Expr b);  ///< Promotes @p a to Expression<ConstantNode> and uses operator/(Expr a, Expr b).
                                   ///< @todo efficient version of this without ExpressionGraph::constant
 Expr operator/(Expr a, float b);  ///< Implementation via @f$ a * \frac{1}{b} @f$.
-///@}
 
 ///@}
 
@@ -317,14 +315,13 @@ Expr logaddexp(Expr a, Expr b);
 
 ///@addtogroup graph_ops_mathematical
 ///@{
-/**
- * @name Element-wise min/max
+/*
+ * Element-wise min/max
  * Performs an element-wise min max comparison between expressions.
  * @see min, max for axis level operations
  * @see MinimumNodeOp, MaximumNodeOp
  * @todo implement version without ExpressionGraph::constant.
  */
-///@{
 
 /**
  * Computes the element-wise maximum of its inputs.
@@ -360,7 +357,6 @@ Expr minimum(float a, Expr b);
  */
 Expr minimum(Expr a, float b);
 ///@}
-///@}
 
 /**
  * Pair of expressions.
@@ -390,6 +386,8 @@ Expr get(Expr2 tuple) { return std::get<I>(tuple); }
  * @returns An ordered 2-tuple of Expressions
  */
 Expr2 topk(Expr a, int k, int axis, bool descending = true);
+Expr  topkIndices(Expr a, int k, int axis, bool descending = true);
+Expr  topkValues(Expr a, int k, int axis, bool descending = true);
 
 /**
  * Returns largest elements of an expression along an axis.
@@ -421,23 +419,20 @@ Expr2 argmin(Expr a, int axis);
  * @{
  */
 
-/**
- * @name Expr-Expr comparisons
+/*
+ * Expr-Expr comparisons
  */
-///@{
 Expr lt(Expr a, Expr b);  ///< @f$ a < b @f$
 Expr eq(Expr a, Expr b);  ///< @f$ a \equiv b @f$
 Expr gt(Expr a, Expr b);  ///< @f$ a > b @f$
 Expr ge(Expr a, Expr b);  ///< @f$ a \geq b @f$
 Expr ne(Expr a, Expr b);  ///< @f$ a \neq b @f$
 Expr le(Expr a, Expr b);  ///< @f$ a \leq b @f$
-///@}
 
-/**
- * @name Float-Expr comparisons
+/*
+ * Float-Expr comparisons
  * Floats are promoted to a @ref ExpressionGraph::constant and use the Expr-Expr methods
  */
-///@{
 Expr lt(float a, Expr b);  ///< @f$ a < b @f$
 Expr eq(float a, Expr b);  ///< @f$ a \equiv b @f$
 Expr gt(float a, Expr b);  ///< @f$ a > b @f$
@@ -451,7 +446,6 @@ Expr gt(Expr a, float b);  ///< @f$ a > b @f$
 Expr ge(Expr a, float b);  ///< @f$ a \geq b @f$
 Expr ne(Expr a, float b);  ///< @f$ a \neq b @f$
 Expr le(Expr a, float b);  ///< @f$ a \leq b @f$
-///@}
 
 ///@}
 
@@ -479,6 +473,16 @@ Expr bdot(Expr a,
           float scalar = 1.f);
 
 /**
+ * bdot_legacy is an old implemetation of bdot without correct broadcasting on the batch dimensions, 
+ * to be removed once the behavior can be correctly replicated with normal bdot on 5 dimensions.
+ */
+Expr bdot_legacy(Expr a,
+                 Expr b,
+                 bool transA = false,
+                 bool transB = false,
+                 float scalar = 1.f);
+
+/**
  * Performs an affine transformation.
  * Computes
  * @f$ C \leftarrow \alpha \operatorname{op}(A) \cdot \operatorname{op}(B) + C@f$,
@@ -488,10 +492,18 @@ Expr bdot(Expr a,
  */
 Expr affine(Expr a,
             Expr b,
-            Expr c,
+            Expr bias,
             bool transA = false,
             bool transB = false,
             float scalar = 1.f);
+
+/**
+ * As above, but efficiently applies relu transformation to output. For inference only.
+ */
+Expr affineWithReluDropout(Expr a,
+                           Expr b,
+                           Expr bias,
+                           float dropProb = 0.f);
 
 /**
  * Computes the dot product of CSR-tensor @p A with @p B.
@@ -674,15 +686,35 @@ Expr flatten_2d(Expr a);
 Expr stopGradient(Expr a);
 
 /**
+ * Return index-th node from nodes. This is a selector which add `nodes` into the computation graph
+ * and makes sure they do not end up unattached if not used due to some condition that computes `index`
+ * for only one of them. This is a no-op similar to `reshape`.
+*/
+Expr choose(std::vector<Expr> nodes, size_t index);
+
+/**
  * Gathers elements along an axis.
  * @param a       The input expression
  * @param axis    The axis along which to index
  * @param indices The indices to be gathered
  * @returns       Gathered expression with the same shape as @p indices
  * @note @p a and @p indices must have the same rank
- * @note The non-target axes of @p a and @p indicies must have the same size, or be broadcastable.
+ * @note The non-target axes of @p a and @p indices must have the same size, or be broadcastable.
  */
 Expr gather(Expr a, int axis, Expr indices);
+
+/**
+ * Scatter elements from source along an axis into a. Unindexed elements from a remain unchanged.
+ * This is the reverse operation to gather.
+ * @param a       The input expression
+ * @param axis    The axis along which to index
+ * @param indices The indices to be scattered
+ * @param source  Expression with values to scatter. 
+ * @returns       Scattered expression with the same shape as @p a now containing values from @p source in positions @p indices
+ * @note @p source and @p indices must have the same rank
+ * @note In this version @p source and @p indicies must have the same shape
+ */
+Expr scatter(Expr a, int axis, Expr indices, Expr source);
 
 #if 0
  // reverse operation to gather. a is expression into with values from b are inserted and positions indices along axis.
@@ -783,8 +815,7 @@ static inline Expr narrow(Expr a, int axis, size_t start, size_t length) {
 
 ///@addtogroup graph_ops_mathematical
 ///@{
-///@name Aggregations
-///@{
+// Aggregations
 
 /**
  * Compute the sum along the specified axis.
@@ -835,7 +866,6 @@ Expr min(Expr a, int ax);
  */
 Expr prod(Expr a, int ax);
 
-///@}
 ///@}
 
 /**
@@ -903,7 +933,19 @@ Expr weighted_average(Expr in, Expr weights, int ax = 0);
  * @f]
  * @see LayerNormalizationOp
  */
-Expr layerNorm(Expr x, Expr gamma, Expr beta = nullptr, float eps = 1e-9);
+Expr layerNorm(Expr x, Expr gamma = nullptr, Expr beta = nullptr, float eps = 1e-9);
+
+/**
+ * Applies RMS normalization over the last dimension. 
+ * 
+ * See: Biao Zhang; Rico Sennrich (2019). Root Mean Square Layer Normalization. 
+ * In Advances in Neural Information Processing Systems 32. Vancouver, Canada.
+ * @f[
+   \frac{x}{\sqrt{\frac{1}{N}\sum x^2 + \mathrm{eps}}} \times \gamma + \beta
+ * @f]
+ * @see RMSNormalizationOp
+ */
+Expr rmsNorm(Expr x, Expr gamma = nullptr, Expr beta = nullptr, float eps = 1e-9);
 
 /**
  * Highway transformation.
@@ -924,7 +966,7 @@ Expr highway(const std::string prefix, Expr x);
  * Performs dropout using a given mask.
  */
 static inline Expr dropout(Expr x, Expr mask) {
-  if (mask)
+  if(mask)
     return x * mask;
   else
     return x;
@@ -934,21 +976,30 @@ static inline Expr dropout(Expr x, Expr mask) {
  * Performs dropout with a given probably and explicit shape.
  */
 static inline Expr dropout(Expr x, float dropProb, Shape shape) {
-  if(dropProb == 0)
-    return x;
-  auto graph = x->graph();
-  auto mask = graph->dropoutMask(dropProb, shape);
+  auto mask = dropProb ? x->graph()->dropoutMask(dropProb, shape) : nullptr;
   return dropout(x, mask);
 }
 
 /**
- * Performs dropout with a given probably.
+ * Performs dropout with a given probably over explicit axes.
+ */
+static inline Expr dropout(Expr x, float dropProb, const Shape::Axes& axes) {
+  auto mask = dropProb ? x->graph()->dropoutMask(dropProb, x->shape().fromAxes(axes)) : nullptr;
+  return dropout(x, mask);
+}
+
+/**
+ * Performs dropout with a given probability.
  */
 static inline Expr dropout(Expr x, float dropProb) {
-  if(dropProb == 0)
-    return x;
-  return dropout(x, dropProb, x->shape());
+  auto mask = dropProb ? x->graph()->dropoutMask(dropProb, x->shape()) : nullptr;
+  return dropout(x, mask);
 }
+
+Expr dropoutReluInplace(Expr x, Expr mask=nullptr);
+Expr dropoutReluInplace(Expr x, float dropProb, Shape maskShape);
+Expr dropoutReluInplace(Expr x, float dropProb, const Shape::Axes& axes);
+Expr dropoutReluInplace(Expr x, float dropProb);
 
 /**
  * Shifts the elements of an expression by a per-axis offset @p shift

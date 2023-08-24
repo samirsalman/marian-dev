@@ -27,13 +27,16 @@ public:
   virtual ~ExpressionGraphPackable() {}
 
   // Convert model weights into packed format and save to IO items.
-  // @TODO: review this
-  void packAndSave(const std::string& name, const std::string& meta, Type gemmElementType = Type::float32, Type saveElementType = Type::float32) {
+  std::vector<io::Item> pack(Type gemmElementType = Type::float32, Type saveElementType = Type::float32) {
     std::vector<io::Item> ioItems;
 
+    // handle packable parameters first (a float32 parameter is packable)
+    auto packableParameters = paramsByElementType_[Type::float32];
     // sorted by name in std::map
-    for (auto p : params()->getMap()) {
+    for (auto p : packableParameters->getMap()) {
       std::string pName = p.first;
+
+      LOG(info, "Processing parameter {} with shape {} and type {}", pName, p.second->shape(), p.second->value_type());
 
       if (!namespace_.empty()) {
         if (pName.substr(0, namespace_.size() + 2) == namespace_ + "::")
@@ -169,19 +172,19 @@ public:
           // Hardware-specific conversions which allow to implement memory-mapping and avoid conversion at runtime
           cpu::integer::passOrAbort(gemmElementType); // Check if the hardware supports the GEMM type
           if(isSsse3(gemmElementType)) {
-            intgemm::ssse3::Kernels8::PrepareBTransposed(tmp->data(), /*input*/
+            intgemm::SSSE3::Kernels8::PrepareBTransposed(tmp->data(), /*input*/
                                                     paramMat->data<int8_t>(), /*output*/
                                                     quantMult, /*Quant Mult*/
                                                     rows(val),
                                                     cols(val));
           } else if(isAvx2(gemmElementType)) {
-            intgemm::avx2::Kernels8::PrepareBTransposed(tmp->data(), /*input*/
+            intgemm::AVX2::Kernels8::PrepareBTransposed(tmp->data(), /*input*/
                                                    paramMat->data<int8_t>(), /*output*/
                                                    quantMult, /*Quant Mult*/
                                                    rows(val),
                                                    cols(val));
           } else if(isAvx512(gemmElementType)) {
-            intgemm::avx512bw::Kernels8::PrepareBTransposed(tmp->data(), /*input*/
+            intgemm::AVX512BW::Kernels8::PrepareBTransposed(tmp->data(), /*input*/
                                                      paramMat->data<int8_t>(), /*output*/
                                                      quantMult, /*Quant Mult*/
                                                      rows(val),
@@ -203,19 +206,19 @@ public:
            // Hardware-specific conversions which allow to implement memory-mapping and avoid conversion at runtime
            cpu::integer::passOrAbort(gemmElementType); // Check if the hardware supports the GEMM type
           if(isSse2(gemmElementType)) {
-            intgemm::sse2::Kernels16::PrepareBTransposed(tmp->data(), /*input*/
+            intgemm::SSE2::Kernels16::PrepareBTransposed(tmp->data(), /*input*/
                                                     paramMat->data<int16_t>(), /*output*/
                                                     quantMult, /*Quant Mult*/
                                                     rows(val),
                                                     cols(val));
           } else if(isAvx2(gemmElementType)) {
-            intgemm::avx2::Kernels16::PrepareBTransposed(tmp->data(), /*input*/
+            intgemm::AVX2::Kernels16::PrepareBTransposed(tmp->data(), /*input*/
                                                     paramMat->data<int16_t>(), /*output*/
                                                     quantMult, /*Quant Mult*/
                                                     rows(val),
                                                     cols(val));
           } else if(isAvx512(gemmElementType)) {
-            intgemm::avx512bw::Kernels16::PrepareBTransposed(tmp->data(), /*input*/
+            intgemm::AVX512BW::Kernels16::PrepareBTransposed(tmp->data(), /*input*/
                                                       paramMat->data<int16_t>(), /*output*/
                                                       quantMult, /*Quant Mult*/
                                                       rows(val),
@@ -257,6 +260,33 @@ public:
       }
     }
 
+    // Now handle all non-float32 parameters
+    for(auto& iter : paramsByElementType_) {
+      auto type = iter.first;
+      if(type == Type::float32)
+        continue;
+
+      for (auto p : iter.second->getMap()) {
+        std::string pName = p.first;
+        LOG(info, "Processing parameter {} with shape {} and type {}", pName, p.second->shape(), p.second->value_type());
+
+        if (!namespace_.empty()) {
+          if (pName.substr(0, namespace_.size() + 2) == namespace_ + "::")
+            pName = pName.substr(namespace_.size() + 2);
+        }
+
+        Tensor val = p.second->val();
+        io::Item item;
+        val->get(item, pName);
+        ioItems.emplace_back(std::move(item));
+      }
+    }
+
+    return ioItems;
+  }
+
+  void packAndSave(const std::string& name, const std::string& meta, Type gemmElementType = Type::float32, Type saveElementType = Type::float32) {
+    auto ioItems = pack(gemmElementType, saveElementType);
     if (!meta.empty())
       io::addMetaToItems(meta, "special:model.yml", ioItems);
     io::saveItems(name, ioItems);

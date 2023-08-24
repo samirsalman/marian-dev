@@ -9,6 +9,18 @@
 
 namespace marian {
 
+/**
+ * This exception gets thrown when a training run divergence was detected. See below in main update function.
+*/
+class DivergenceException : public std::runtime_error {
+public:
+  DivergenceException(float averageSlow, float averageFast, float sigmas)
+  : std::runtime_error(fmt::format(
+      "Detected training divergence: slow-moving average loss {:.4f} exceeded by fast-moving average loss {:.4f} by {:.4f} = {:.4f} * sigmas", 
+      averageSlow, averageFast, averageFast - averageSlow, sigmas)) 
+    {}
+};
+
 class Scheduler : public TrainingObserver {
 private:
   Ptr<Options> options_;
@@ -17,6 +29,13 @@ private:
   Ptr<IMPIWrapper> mpi_;
 
   bool first_{true};                  // true if this is the first update after renewing the training
+
+  bool throwOnDivergence_{false};   // throw an exception if training divergence is detected
+  size_t lossAvgWindowSlow_{1000};  // window size for slow-moving average loss for divergence detection
+  size_t lossAvgWindowFast_{10};    // window size for fast-moving average loss for divergence detection
+  float divergenceTolerance_{5.f};  // tolerance for divergence detection as multiples of standard deviation
+  SchedulingParameter throwAfter_;  // for diagnostics only; training will throw if non-zero and training has progressed this far
+  
   size_t gradientNormAvgWindow_{100}; // window size for recording the exponential average of gradient norms, after this many updates about 90% of the mass comes from this many last updates
   SchedulingParameter logicalEpoch_;
   size_t logicalEpochWidth_{0};
@@ -28,7 +47,7 @@ private:
   // (regardless if it's the 1st or nth epoch and if it's a new or continued training),
   // which indicates the end of the training data stream from STDIN
   bool endOfStdin_{false};  // true at the end of the epoch if training from STDIN;
- 
+
   // @TODO: figure out how to compute this with regard to updates as well, although maybe harder since no final value
   // determine scheduled LR decay factor (--lr-decay-inv-sqrt option)
   float getScheduledLRDecayFactor(const TrainingState& state) const {
@@ -133,7 +152,29 @@ public:
   Scheduler(Ptr<Options> options, Ptr<TrainingState> state, Ptr<IMPIWrapper> mpi = nullptr)
       : options_(options), state_(state), mpi_(mpi),
         gradientNormAvgWindow_(options_->get<size_t>("gradient-norm-average-window", 100)) {
-  
+
+    auto throwParameters = options_->get<std::vector<std::string>>("throw-on-divergence");
+    if(!throwParameters.empty()) {
+      throwOnDivergence_ = true;
+      if(throwParameters.size() > 0)
+        lossAvgWindowSlow_ = std::stoul(throwParameters[0]);
+      if(throwParameters.size() > 1)
+        lossAvgWindowFast_ = std::stoul(throwParameters[1]);
+      if(throwParameters.size() > 2)
+        divergenceTolerance_ = std::stof(throwParameters[2]);
+      if(throwParameters.size() > 3)
+        throwAfter_ = SchedulingParameter::parse(throwParameters[3]);
+        
+      LOG(info, 
+          "[scheduler] Divergence detection is enabled for slow-moving averaging window over {} steps "
+          "vs fast-moving window over {} steps with tolerance of {} sigmas", 
+          lossAvgWindowSlow_, lossAvgWindowFast_, divergenceTolerance_);
+
+      if(throwAfter_) {
+        LOG(warn, "[scheduler] Diagnostic DivergenceException will be thrown when training reaches {}", (std::string)throwAfter_);
+      }
+    }
+
     // parse logical-epoch parameters
     auto logicalEpochStr = options->get<std::vector<std::string>>("logical-epoch", {"1e", "0"});
     ABORT_IF(logicalEpochStr.empty(), "Logical epoch information is missing?");
@@ -174,7 +215,7 @@ public:
       size_t progress = state_->getProgressIn(mbWarmup.unit); // number of updates/labels processed
       auto progressRatio = (double)progress / (double)mbWarmup.n; // where are we relatively within target warm-up period
       // if unit is labels, then account for the fact that our increment itself is not constant
-#if 1  // this seems to hurt convergence quite a bit compared to when updates is used     
+#if 1  // this seems to hurt convergence quite a bit compared to when updates is used
       if (mbWarmup.unit == SchedulingUnit::trgLabels)
         progressRatio = std::sqrt(progressRatio);
 #endif
@@ -207,7 +248,7 @@ public:
     if(saveAndExitRequested()) // via SIGTERM
       return false;
 
-#if 1  // @TODO: to be removed once we deprecate after-epochs and after-batches   
+#if 1  // @TODO: to be removed once we deprecate after-epochs and after-batches
     // stop if it reached the maximum number of epochs
     size_t stopAfterEpochs = options_->get<size_t>("after-epochs");
     if(stopAfterEpochs > 0 && calculateLogicalEpoch() > stopAfterEpochs)
@@ -231,10 +272,9 @@ public:
       }
     }
 
-    // stop if the first validator did not improve for a given number of checks
+    // stop if the first/all/any validators did not improve for a given number of checks
     size_t stopAfterStalled = options_->get<size_t>("early-stopping");
-    if(stopAfterStalled > 0 && !validators_.empty()
-       && stalled() >= stopAfterStalled)
+    if(stopAfterStalled > 0 && stalled() >= stopAfterStalled)
       return false;
 
     // stop if data streaming from STDIN is stopped
@@ -276,15 +316,24 @@ public:
   bool validating() {
     return (!validators_.empty()
             && state_->enteredNewPeriodOf(options_->get<std::string>("valid-freq"))
+            && state_->largerThan(options_->get<std::string>("valid-from"))
             && keepGoing());
   }
 
   bool saving() {
-    return state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"));
+    return (state_->enteredNewPeriodOf(options_->get<std::string>("save-freq"))
+            && state_->largerThan(options_->get<std::string>("save-from")) );
   }
 
   bool syncing() {
     return state_->enteredNewPeriodOf(options_->get<std::string>("sync-freq", "0"));
+  }
+
+  bool replacingWithSmoothed() {
+    if(options_->get<float>("exponential-smoothing", 0.f) != 0.f)
+      return state_->enteredNewPeriodOf(options_->get<std::string>("exponential-smoothing-replace-freq", "0"));
+    else
+      return false;
   }
 
   void validate(const std::vector<Ptr<ExpressionGraph>>& graphs,
@@ -297,12 +346,11 @@ public:
        || (!state_->enteredNewPeriodOf(options_->get<std::string>("valid-freq")) && !isFinal)) // not now
       return;
 
-    bool firstValidator = true;
+    size_t stalledPrev = stalled();
     for(auto validator : validators_) {
       if(!validator)
         continue;
 
-      size_t stalledPrev = validator->stalled();
       float value = 0;
       if(!mpi_ || mpi_->isMainProcess()) {
         // We run validation only in the main process, but this is risky with MPI.
@@ -330,32 +378,58 @@ public:
       if(mpi_) {
         // collect and broadcast validation result to all processes and bring validator up-to-date
         mpi_->bCast(&value, 1, IMPIWrapper::getDataType(&value));
-        
+
         // @TODO: add function to validator?
         mpi_->bCast(&validator->stalled(), 1, IMPIWrapper::getDataType(&validator->stalled()));
         mpi_->bCast(&validator->lastBest(), 1, IMPIWrapper::getDataType(&validator->lastBest()));
       }
 
-      if(firstValidator)
-        state_->validBest = value;
-
       state_->validators[validator->type()]["last-best"] = validator->lastBest();
       state_->validators[validator->type()]["stalled"]   = validator->stalled();
-
-      // notify training observers if the first validator did not improve
-      if(firstValidator && validator->stalled() > stalledPrev)
-        state_->newStalled(validator->stalled());
-      firstValidator = false;
     }
+
+    // notify training observers about stalled validation
+    size_t stalledNew = stalled();
+    if(stalledNew > stalledPrev)
+      state_->newStalled(stalledNew);
 
     state_->validated = true;
   }
 
+  // Returns the proper number of stalled validation w.r.t. early-stopping-on
   size_t stalled() {
+    std::string stopOn = options_->get<std::string>("early-stopping-on");
+    if(stopOn == "any")
+      return stalledMax();
+    if(stopOn == "all")
+      return stalledMin();
+    return stalled1st();
+  }
+
+  // Returns the number of stalled validations for the first validator
+  size_t stalled1st() {
     if(!validators_.empty())
       if(validators_[0])
         return validators_[0]->stalled();
     return 0;
+  }
+
+  // Returns the largest number of stalled validations across validators or 0 if there are no validators
+  size_t stalledMax() {
+    size_t max = 0;
+    for(auto validator : validators_)
+      if(validator && validator->stalled() > max)
+        max = validator->stalled();
+    return max;
+  }
+
+  // Returns the lowest number of stalled validations across validators or 0 if there are no validators
+  size_t stalledMin() {
+    size_t min = std::numeric_limits<std::size_t>::max();
+    for(auto validator : validators_)
+      if(validator && validator->stalled() < min)
+        min = validator->stalled();
+    return min == std::numeric_limits<std::size_t>::max() ? 0 : min;
   }
 
   void update(StaticLoss rationalLoss, Ptr<data::Batch> batch) {
@@ -374,31 +448,96 @@ public:
                                          // -freq parameters do not support epoch units
     state_->validated = false;
 
-    // Since batchLabels is counted across all MPI processes, we also should temporarily
-    // extrapolate cost across MPI processes, to have numbers in the right range.
-    // When doing the actual log, we then aggregate across MPI processes to get the accurate number.
+    // collect costs from all nodes if training with MPI
     if(mpi_) {
-      rationalLoss.loss  *= mpi_->numMPIProcesses();
-      rationalLoss.count *= mpi_->numMPIProcesses();
+      mpi_->allReduce(&rationalLoss.loss,  &rationalLoss.loss,  1, MPI_FLOAT, MPI_SUM);
+      mpi_->allReduce(&rationalLoss.count, &rationalLoss.count, 1, MPI_FLOAT, MPI_SUM);
     }
+    float currentNormalizedLoss = rationalLoss.loss / rationalLoss.count;
 
-    // @BUGBUG: rationalLoss.count is float, not a count. Possible solution: make (costSum, costCount) a StaticLoss object as well
-    state_->costSum      += rationalLoss.loss;   // aggregate sum cost since last display
-    state_->costCount    += rationalLoss.count; // cost gets normalized w.r.t. this in display
+    state_->costSum   += rationalLoss.loss;
+    state_->costCount += rationalLoss.count;
 
     state_->updatesDisp  += 1;
     state_->samplesDisp  += batchSize;
     state_->wordsDisp    += batchLabels; // words at given input processed since last display, for speed display
 
     state_->samplesEpoch += batchSize;   // sentences processed in this epoch
-    state_->labelsTotal  += batchLabels; // total labels processed
+    state_->labelsTotal  += batchLabels; // total labels processed      
 
     state_->newUpdate(numReadBatches);
 
+    // true if --throw-on-divergence [lossAvgWindowSlow_] [lossAvgWindowFast_] [divergenceTolerance_] is enabled, false otherwise
+    if(throwOnDivergence_ && isFinite(currentNormalizedLoss)) {
+      size_t windowSlow = std::min(lossAvgWindowSlow_, state_->batches); // we compare the running exponential average over a longer window
+      size_t windowFast = std::min(lossAvgWindowFast_, state_->batches); // with the running exponential everage over a shorter window (for smoothing)
+      
+      // By default we set windowSlow = 100 and windowFast = 10, so if values diverge the average from the shorter window should pick this up quickly
+      // vs the longer window while still smoothing over multiple updates avoiding detecting random single spikes as divergence.
+      float alphaSlow = 2.f / (float)(windowSlow + 1); // about 90% of the mass will come from the windowSlow last steps
+      float alphaFast = 2.f / (float)(windowFast + 1); // about 90% of the mass will come from the windowFast last steps
+  
+      // set some reasonable defaults during training start. Cost shouldn't be zero unless fresh start without *.progress.yml
+      if(state_->lossAvgSlow == 0) {
+        state_->lossAvgSlow = currentNormalizedLoss;
+        state_->lossAvgFast = currentNormalizedLoss;
+        state_->lossVarSlow = 0;
+      }
+        
+      // allow statistics to see at least lossAvgWindowSlow_ updates before using for divergence detection
+      if(state_->batches > lossAvgWindowSlow_) {
+        // we compare the faster moving average against the slower moving exponential loss average
+        float delta = state_->lossAvgFast - state_->lossAvgSlow;
+        // running standard deviation
+        float sigma = std::sqrt(state_->lossVarSlow);
+
+        // negative delta is always safe (indicates convergence) and sigma should always be larger than zero (safe for division) after a few first steps
+        if(delta > 0 && sigma > 0) {
+          // how many standard deviations (sigmas) above slow-moving average?
+          float sigmasDiverged = delta / sigma;
+          if(sigmasDiverged > divergenceTolerance_) { // uh-oh - by default assume training diverged if slow-moving average is exceeded by e.g. 3 sigmas
+            LOG(warn, 
+                "Detected training divergence: slow-moving average loss {:.4f} exceeded by fast-moving average loss {:.4f} by {:.4f} = {:.4f} * sigmas", 
+                state_->lossAvgSlow, state_->lossAvgFast, delta, sigmasDiverged);
+
+            // this gets propagated to the main training loop in training/training.h and will either fail the whole training process with
+            // an unhandled exception (thus exiting with error code) or trigger another training run with fallback to fp32 if we were 
+            // training with fp16 and --fp16-fallback-to-fp32 is enabled.
+            throw DivergenceException(state_->lossAvgSlow, state_->lossAvgFast, sigmasDiverged);
+          }
+        }
+
+        if(state_->enteredNewPeriodOf(options_->get<std::string>("disp-freq")) || state_->batches <= options_->get<size_t>("disp-first")) {
+          if(!mpi_ || mpi_->isMainProcess()) {
+            LOG(debug, 
+                "delta(={:.4f}) = avgFast(={:.4f}) - avgSlow(={:.4f}) = {:.4f} * sigma(={:.4f}) < {:.4f} * sigma",
+                delta, state_->lossAvgFast, state_->lossAvgSlow, delta / sigma, sigma, divergenceTolerance_);
+          }
+        }
+      }
+
+      // purely diagnostic. This will throw a divergence exception once the specified training progress has occurred. 
+      if(throwAfter_) {
+        if(state_->enteredNewPeriodOf(throwAfter_)) {
+          LOG(warn, "Training reached {}; throwing diagnostic DivergenceException", (std::string)throwAfter_);
+          throw DivergenceException(state_->lossAvgSlow, state_->lossAvgFast, 0.f);
+        }
+      }
+      
+      // log slow-moving exponential average and variance of training cost stats
+      float deltaSlow = currentNormalizedLoss - state_->lossAvgSlow;
+      state_->lossAvgSlow = state_->lossAvgSlow + alphaSlow * deltaSlow;
+      state_->lossVarSlow  = (1.0f - alphaSlow) * (state_->lossVarSlow + alphaSlow * deltaSlow * deltaSlow);
+      
+      // log fast-moving exponential average of training cost stats
+      float deltaFast = currentNormalizedLoss - state_->lossAvgFast;
+      state_->lossAvgFast = state_->lossAvgFast + alphaFast * deltaFast;
+    }
+
     if(gradientNorm) {
       size_t range = std::min(gradientNormAvgWindow_, state_->batches);
-      float alpha = 2.f / (float)(range + 1); 
-      
+      float alpha = 2.f / (float)(range + 1);
+
       float delta = gradientNorm - state_->gradientNormAvg;
       state_->gradientNormAvg = state_->gradientNormAvg + alpha * delta;
       state_->gradientNormVar = (1.0f - alpha) * (state_->gradientNormVar + alpha * delta * delta);
@@ -414,38 +553,30 @@ public:
 
     if(state_->enteredNewPeriodOf(options_->get<std::string>("disp-freq")) || state_->batches <= options_->get<size_t>("disp-first")) {
       // if MPI then aggregate precise cost across workers
-      if(mpi_) {
-        state_->costSum   /= mpi_->numMPIProcesses(); // undo the extra scaling
-        state_->costCount /= mpi_->numMPIProcesses(); // undo the extra scaling
-        mpi_->allReduce(&state_->costSum, &state_->costSum, 1, MPI_FLOAT, MPI_SUM);
-        mpi_->allReduce(&state_->costCount, &state_->costCount, 1, MPI_FLOAT, MPI_SUM);
+      if(!mpi_ || mpi_->isMainProcess()) {
+        if(options_->get<bool>("lr-report")) {
+          LOG(info,
+              "Ep. {} : Up. {} : Sen. {} : {} : Time {:.2f}s : {:.2f} words/s : gNorm {:.4f} : L.r. {:.4e}",
+              formatLogicalEpoch(),
+              state_->batches,
+              utils::withCommas(state_->samplesEpoch),
+              formatLoss(lossType, dispLabelCounts, batchLabels, state_),
+              timer_.elapsed(),
+              state_->wordsDisp / timer_.elapsed(),
+              state_->gradientNormAvg,
+              state_->eta);
+        } else {
+          LOG(info,
+              "Ep. {} : Up. {} : Sen. {} : {} : Time {:.2f}s : {:.2f} words/s : gNorm {:.4f}",
+              formatLogicalEpoch(),
+              state_->batches,
+              utils::withCommas(state_->samplesEpoch),
+              formatLoss(lossType, dispLabelCounts, batchLabels, state_),
+              timer_.elapsed(),
+              state_->wordsDisp / timer_.elapsed(),
+              state_->gradientNormAvg);
+        }
       }
-
-      if(mpi_ && mpi_->myMPIRank() != 0) {
-        // skip the report on alternate worker processes
-      } else if(options_->get<bool>("lr-report")) {
-        LOG(info,
-            "Ep. {} : Up. {} : Sen. {} : {} : Time {:.2f}s : {:.2f} words/s : gNorm {:.4f} : L.r. {:.4e}",
-            formatLogicalEpoch(),
-            state_->batches,
-            utils::withCommas(state_->samplesEpoch),
-            formatLoss(lossType, dispLabelCounts, batchLabels, state_),
-            timer_.elapsed(),
-            state_->wordsDisp / timer_.elapsed(),
-            state_->gradientNormAvg,
-            state_->eta);
-      } else {
-        LOG(info,
-            "Ep. {} : Up. {} : Sen. {} : {} : Time {:.2f}s : {:.2f} words/s : gNorm {:.4f}",
-            formatLogicalEpoch(),
-            state_->batches,
-            utils::withCommas(state_->samplesEpoch),
-            formatLoss(lossType, dispLabelCounts, batchLabels, state_), 
-            timer_.elapsed(),
-            state_->wordsDisp / timer_.elapsed(),
-            state_->gradientNormAvg);
-      }
-
       timer_.start();
       state_->costSum      = 0;
       state_->costCount    = 0;
@@ -454,24 +585,11 @@ public:
       state_->samplesDisp  = 0;
       state_->wordsDisp    = 0;
     }
-
-    // progress heartbeat for MS-internal Philly compute cluster
-    // This environment variable exists when running on the cluster.
-    using namespace std::chrono;
-    if((!mpi_ || mpi_->myMPIRank() == 0) && getenv("PHILLY_JOB_ID")
-       && heartBeatTimer_.elapsed<std::chrono::minutes>() >= 30) {
-      fprintf(stderr, "PROGRESS: %.2f%%\nEVALERR: %.7f%%\n",
-          (double)calculateLogicalEpoch(),
-          state_->costSum / (state_->costCount ? state_->costCount : 1));
-      fflush(stderr);
-      heartBeatTimer_.start();
-    }
   }
 
-  void load(const std::string& name) {
-    std::string nameYaml = name + ".progress.yml";
-    if(filesystem::exists(nameYaml))
-      state_->load(nameYaml);
+  void loadFromString(const std::string yamlString) {
+    if(!yamlString.empty())
+      state_->loadFromString(yamlString);
 
     if(options_->get<bool>("no-restore-corpus")) {
       state_->samplesEpoch = 0;
@@ -483,15 +601,34 @@ public:
       state_->wordsDisp    = 0;
     }
 
-    if(options_->get<bool>("valid-reset-stalled")) {
+    if(options_->get<bool>("valid-reset-stalled") || options_->get<bool>("valid-reset-all")) {
       state_->stalled      = 0;
       state_->maxStalled   = 0;
       for(const auto& validator : validators_) {
-        state_->validators[validator->type()]["stalled"] = 0;
+        if(state_->validators[validator->type()]) {
+          // reset the number of stalled validations, e.g. when the validation set is the same
+          state_->validators[validator->type()]["stalled"] = 0;
+          // reset last best results as well, e.g. when the validation set changes
+          if(options_->get<bool>("valid-reset-all"))
+            state_->validators[validator->type()]["last-best"] = validator->initScore();
+        }
       }
     }
 
     state_->newLoad();
+  }
+
+  void load(const std::string& name) {
+    std::string nameYaml = name + ".progress.yml";
+    std::string yamlStr;
+    if(mpi_->isMainProcess())
+      if(filesystem::exists(nameYaml))
+        yamlStr = io::InputFileStream(nameYaml).readToString();
+
+    if(mpi_)
+      mpi_->bCast(yamlStr);
+
+    loadFromString(yamlStr);
   }
 
   void save(const std::string& name) {
@@ -627,7 +764,8 @@ public:
 
           if(options_->get<bool>("lr-decay-repeat-warmup")) {
             LOG(info, "Restarting learning rate warmup");
-            state.warmupStart.n = state.getProgressIn(SchedulingParameter::parse(options_->get<std::string>("lr-warmup")).unit);
+            state.warmupStart.n = state.getProgressIn(
+                SchedulingParameter::parse(options_->get<std::string>("lr-warmup")).unit);
           }
         }
       }

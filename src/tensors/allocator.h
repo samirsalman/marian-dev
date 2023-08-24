@@ -175,8 +175,9 @@ public:
     reserve(bytes);
   }
 
-  size_t alignedSize(size_t size) {
-    return (size_t)(ceil(size / (double)alignment_) * alignment_);
+  size_t alignedSize(size_t size) const {
+    size_t over = size + alignment_ - 1;
+    return over - (over % alignment_);
   }
 
   void throwAtReallocation(bool throwRealloc) { throw_ = throwRealloc; }
@@ -189,7 +190,7 @@ public:
   }
 
   template <typename T>
-  size_t capacity(size_t num) {
+  size_t capacity(size_t num) const {
     return alignedSize(num * sizeof(T));
   }
 

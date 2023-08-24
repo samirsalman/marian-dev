@@ -4,25 +4,27 @@
 
 #include "spdlog/spdlog.h"
 
+// set to 1 to use for debugging if no loggers can be created
+#define LOG_TO_STDERR 0
 
 namespace marian {
   void logCallStack(size_t skipLevels);
   std::string getCallStack(size_t skipLevels);
 
   // Marian gives a basic exception guarantee. If you catch a
-  // MarianRuntimeError you must assume that the object can be 
+  // MarianRuntimeError you must assume that the object can be
   // safely destructed, but cannot be used otherwise.
 
-  // Internal multi-threading in exception-throwing mode is not 
+  // Internal multi-threading in exception-throwing mode is not
   // allowed; and constructing a thread-pool will cause an exception.
-  
+
   class MarianRuntimeException : public std::runtime_error {
   private:
     std::string callStack_;
 
   public:
-    MarianRuntimeException(const std::string& message, const std::string& callStack) 
-    : std::runtime_error(message), 
+    MarianRuntimeException(const std::string& message, const std::string& callStack)
+    : std::runtime_error(message),
       callStack_(callStack) {}
 
     const char* getCallStack() const throw() {
@@ -149,6 +151,9 @@ class Config;
 
 template <class... Args>
 void checkedLog(std::string logger, std::string level, Args... args) {
+#if LOG_TO_STDERR
+  std::cerr << "[" << level << "] " << fmt::format(args...) << std::endl;
+#else
   Logger log = spdlog::get(logger);
   if(!log) {
     return;
@@ -169,7 +174,8 @@ void checkedLog(std::string logger, std::string level, Args... args) {
   else {
     log->warn("Unknown log level '{}' for logger '{}'", level, logger);
   }
+#endif
 }
 
 void createLoggers(const marian::Config* options = nullptr);
-void switchtoMultinodeLogging(std::string nodeIdStr);
+void switchToMultinodeLogging(std::string nodeIdStr);

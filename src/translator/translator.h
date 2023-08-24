@@ -20,12 +20,7 @@
 #include "translator/scorers.h"
 
 // currently for diagnostics only, will try to mmap files ending in *.bin suffix when enabled.
-// @TODO: add this as an actual feature.
-#define MMAP 0
-
-#if MMAP
 #include "3rd_party/mio/mio.hpp"
-#endif
 
 namespace marian {
 
@@ -42,13 +37,12 @@ private:
 
   size_t numDevices_;
 
-#if MMAP
-  std::vector<mio::mmap_source> mmaps_;
-#endif
+  std::vector<mio::mmap_source> model_mmaps_; // map
+  std::vector<std::vector<io::Item>> model_items_; // non-mmap
 
 public:
   Translate(Ptr<Options> options)
-    : options_(New<Options>(options->clone())) { // @TODO: clone should return Ptr<Options> same as "with"?
+    : options_(options->clone()) {
     // This is currently safe as the translator is either created stand-alone or
     // or config is created anew from Options in the validator
 
@@ -62,8 +56,12 @@ public:
     trgVocab_->load(vocabs.back());
     auto srcVocab = corpus_->getVocabs()[0];
 
-    if(options_->hasAndNotEmpty("shortlist"))
-      shortlistGenerator_ = data::createShortlistGenerator(options_, srcVocab, trgVocab_, 0, 1, vocabs.front() == vocabs.back());
+    std::vector<int> lshOpts = options_->get<std::vector<int>>("output-approx-knn", {});
+    ABORT_IF(lshOpts.size() != 0 && lshOpts.size() != 2, "--output-approx-knn takes 2 parameters");
+
+    if (lshOpts.size() == 2 || options_->hasAndNotEmpty("shortlist")) {
+      shortlistGenerator_ = data::createShortlistGenerator(options_, srcVocab, trgVocab_, lshOpts, 0, 1, vocabs.front() == vocabs.back());
+    }
 
     auto devices = Config::getDevices(options_);
     numDevices_ = devices.size();
@@ -72,15 +70,21 @@ public:
     scorers_.resize(numDevices_);
     graphs_.resize(numDevices_);
 
-#if MMAP
     auto models = options->get<std::vector<std::string>>("models");
-    for(auto model : models) {
-      marian::filesystem::Path modelPath(model);
-      ABORT_IF(modelPath.extension() != marian::filesystem::Path(".bin"),
-              "Non-binarized models cannot be mmapped");
-      mmaps_.push_back(std::move(mio::mmap_source(model)));
+    if(options_->get<bool>("model-mmap", false)) {
+      for(auto model : models) {
+        ABORT_IF(!io::isBin(model), "Non-binarized models cannot be mmapped");
+        LOG(info, "Loading model from {}", model);
+        model_mmaps_.push_back(mio::mmap_source(model));
+      }
     }
-#endif
+    else {
+      for(auto model : models) {
+        LOG(info, "Loading model from {}", model);
+        auto items = io::loadItems(model);
+        model_items_.push_back(std::move(items));
+      }
+    }
 
     size_t id = 0;
     for(auto device : devices) {
@@ -89,14 +93,22 @@ public:
         auto prec = options_->get<std::vector<std::string>>("precision", {"float32"});
         graph->setDefaultElementType(typeFromString(prec[0]));
         graph->setDevice(device);
-        graph->reserveWorkspaceMB(options_->get<size_t>("workspace"));
+        if (device.type == DeviceType::cpu) {
+          graph->getBackend()->setOptimized(options_->get<bool>("optimize"));
+          graph->getBackend()->setGemmType(options_->get<std::string>("gemm-type"));
+          graph->getBackend()->setQuantizeRange(options_->get<float>("quantize-range"));
+        }
+        graph->reserveWorkspaceMB(options_->get<int>("workspace"));
         graphs_[id] = graph;
 
-#if MMAP
-        auto scorers = createScorers(options_, mmaps_);
-#else
-        auto scorers = createScorers(options_);
-#endif
+        std::vector<Ptr<Scorer>> scorers;
+        if(options_->get<bool>("model-mmap", false)) {
+          scorers = createScorers(options_, model_mmaps_);
+        }
+        else {
+          scorers = createScorers(options_, model_items_);
+        }
+
         for(auto scorer : scorers) {
           scorer->init(graph);
           if(shortlistGenerator_)
@@ -110,7 +122,7 @@ public:
       threadPool.enqueue(task, device, id++);
     }
 
-    if(options_->get<bool>("output-sampling", false)) {
+    if(options_->hasAndNotEmpty("output-sampling")) {
       if(options_->get<size_t>("beam-size") > 1)
         LOG(warn,
             "[warning] Output sampling and beam search (beam-size > 1) are contradictory methods "
@@ -137,11 +149,11 @@ public:
     std::mutex syncCounts;
 
     // timer and counters for total elapsed time and statistics
-    std::unique_ptr<timer::Timer> totTimer(new timer::Timer()); 
+    std::unique_ptr<timer::Timer> totTimer(new timer::Timer());
     size_t totBatches      = 0;
     size_t totLines        = 0;
     size_t totSourceTokens = 0;
-    
+
     // timer and counters for elapsed time and statistics between updates
     std::unique_ptr<timer::Timer> curTimer(new timer::Timer());
     size_t curBatches      = 0;
@@ -153,21 +165,12 @@ public:
     // abort early to avoid potentially costly batching and translation before error message
     ABORT_IF(statFreq.unit != SchedulingUnit::updates, "Units other than 'u' are not supported for --stat-freq value {}", statFreq);
 
-    // Override display for progress heartbeat for MS-internal Philly compute cluster
-    // otherwise this job may be killed prematurely if no log for 4 hrs
-    if(getenv("PHILLY_JOB_ID")) { // this environment variable exists when running on the cluster
-      if(statFreq.n == 0) {
-        statFreq.n = 10000;
-        statFreq.unit = SchedulingUnit::updates;
-      }
-    }
-
     bool doNbest = options_->get<bool>("n-best");
 
     bg.prepare();
     for(auto batch : bg) {
       auto task = [=, &syncCounts,
-                      &totBatches, &totLines, &totSourceTokens, &totTimer, 
+                      &totBatches, &totLines, &totSourceTokens, &totTimer,
                       &curBatches, &curLines, &curSourceTokens, &curTimer](size_t id) {
         thread_local Ptr<ExpressionGraph> graph;
         thread_local std::vector<Ptr<Scorer>> scorers;
@@ -191,12 +194,12 @@ public:
         }
 
         // if we asked for speed information display this
-        if(statFreq.n > 0) { 
+        if(statFreq.n > 0) {
           std::lock_guard<std::mutex> lock(syncCounts);
-          totBatches++; 
+          totBatches++;
           totLines        += batch->size();
           totSourceTokens += batch->front()->batchWords();
-        
+
           curBatches++;
           curLines        += batch->size();
           curSourceTokens += batch->front()->batchWords();
@@ -205,10 +208,10 @@ public:
             double totTime = totTimer->elapsed();
             double curTime = curTimer->elapsed();
 
-            LOG(info, 
-                "Processed {} batches, {} lines, {} source tokens in {:.2f}s - Speed (since last): {:.2f} batches/s - {:.2f} lines/s - {:.2f} tokens/s", 
+            LOG(info,
+                "Processed {} batches, {} lines, {} source tokens in {:.2f}s - Speed (since last): {:.2f} batches/s - {:.2f} lines/s - {:.2f} tokens/s",
                 totBatches, totLines, totSourceTokens, totTime, curBatches / curTime, curLines / curTime, curSourceTokens / curTime);
-            
+
             // reset stats between updates
             curBatches = curLines = curSourceTokens = 0;
             curTimer.reset(new timer::Timer());
@@ -221,12 +224,12 @@ public:
 
     // make sure threads are joined before other local variables get de-allocated
     threadPool.join_all();
-    
+
     // display final speed numbers over total translation if intermediate displays were requested
     if(statFreq.n > 0) {
       double totTime = totTimer->elapsed();
-      LOG(info, 
-          "Processed {} batches, {} lines, {} source tokens in {:.2f}s - Speed (total): {:.2f} batches/s - {:.2f} lines/s - {:.2f} tokens/s", 
+      LOG(info,
+          "Processed {} batches, {} lines, {} source tokens in {:.2f}s - Speed (total): {:.2f} batches/s - {:.2f} lines/s - {:.2f} tokens/s",
           totBatches, totLines, totSourceTokens, totTime, totBatches / totTime, totLines / totTime, totSourceTokens / totTime);
     }
   }
@@ -249,7 +252,7 @@ public:
   virtual ~TranslateService() {}
 
   TranslateService(Ptr<Options> options)
-    : options_(New<Options>(options->clone())) {
+    : options_(options->clone()) {
     // initialize vocabs
     options_->set("inference", true);
     options_->set("shuffle", "none");
@@ -265,15 +268,27 @@ public:
 
     trgVocab_ = New<Vocab>(options_, vocabPaths.size() - 1);
     trgVocab_->load(vocabPaths.back());
+    auto srcVocab = srcVocabs_.front();
+
+    std::vector<int> lshOpts = options_->get<std::vector<int>>("output-approx-knn");
+    ABORT_IF(lshOpts.size() != 0 && lshOpts.size() != 2, "--output-approx-knn takes 2 parameters");
 
     // load lexical shortlist
-    if(options_->hasAndNotEmpty("shortlist"))
-      shortlistGenerator_ = New<data::LexicalShortlistGenerator>(
-          options_, srcVocabs_.front(), trgVocab_, 0, 1, vocabPaths.front() == vocabPaths.back());
+    if (lshOpts.size() == 2 || options_->hasAndNotEmpty("shortlist")) {
+        shortlistGenerator_ = data::createShortlistGenerator(options_, srcVocab, trgVocab_, lshOpts, 0, 1, vocabPaths.front() == vocabPaths.back());
+    }
 
     // get device IDs
     auto devices = Config::getDevices(options_);
     numDevices_ = devices.size();
+
+    // preload models
+    std::vector<std::vector<io::Item>> model_items_;
+    auto models = options->get<std::vector<std::string>>("models");
+    for(auto model : models) {
+      auto items = io::loadItems(model);
+      model_items_.push_back(std::move(items));
+    }
 
     // initialize scorers
     for(auto device : devices) {
@@ -282,10 +297,15 @@ public:
       auto precison = options_->get<std::vector<std::string>>("precision", {"float32"});
       graph->setDefaultElementType(typeFromString(precison[0])); // only use first type, used for parameter type in graph
       graph->setDevice(device);
-      graph->reserveWorkspaceMB(options_->get<size_t>("workspace"));
+      if (device.type == DeviceType::cpu) {
+        graph->getBackend()->setOptimized(options_->get<bool>("optimize"));
+        graph->getBackend()->setGemmType(options_->get<std::string>("gemm-type"));
+        graph->getBackend()->setQuantizeRange(options_->get<float>("quantize-range"));
+      }
+      graph->reserveWorkspaceMB(options_->get<int>("workspace"));
       graphs_.push_back(graph);
 
-      auto scorers = createScorers(options_);
+      auto scorers = createScorers(options_, model_items_);
       for(auto scorer : scorers) {
         scorer->init(graph);
         if(shortlistGenerator_)
@@ -301,7 +321,7 @@ public:
                       ? convertTsvToLists(input, options_->get<size_t>("tsv-fields", 1))
                       : std::vector<std::string>({input});
     auto corpus_ = New<data::TextInput>(inputs, srcVocabs_, options_);
-    data::BatchGenerator<data::TextInput> batchGenerator(corpus_, options_);
+    data::BatchGenerator<data::TextInput> batchGenerator(corpus_, options_, nullptr, /*runAsync=*/false);
 
     auto collector = New<StringCollector>(options_->get<bool>("quiet-translation", false));
     auto printer = New<OutputPrinter>(options_, trgVocab_);

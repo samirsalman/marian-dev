@@ -2,6 +2,8 @@
 
 #include <string>
 #include <vector>
+#include <typeinfo>
+#include <iostream>
 
 namespace marian {
 namespace utils {
@@ -42,6 +44,9 @@ std::string exec(const std::string& cmd, const std::vector<std::string>& args = 
 
 std::pair<std::string, int> hostnameAndProcessId();
 
+// returns MPI rank from environment variable if set, otherwise 0
+int getMPIRankEnv();
+
 std::string withCommas(size_t n);
 bool beginsWith(const std::string& text, const std::string& prefix);
 bool endsWith(const std::string& text, const std::string& suffix);
@@ -61,6 +66,36 @@ std::string findReplace(const std::string& in, const std::string& what, const st
 
 double parseDouble(std::string s);
 double parseNumber(std::string s);
+
+std::string cxxTypeNameDemangle(const char* name);
+
+// return type name via object of given type
+template <class T>
+std::string cxxTypeName(const T& t) {
+  return cxxTypeNameDemangle(typeid(t).name());
+}
+
+// return type name via templated type
+template <class T>
+std::string cxxTypeName() {
+  return cxxTypeNameDemangle(typeid(T).name());
+}
+
+
+// prints vector values with a custom label.
+template<class T>
+void Debug(const T *arr, size_t size, const std::string &str) {
+  std::cerr << str << ":" << size << ": ";
+  for (size_t i = 0; i < size; ++i) {
+    std::cerr << arr[i] << " ";
+  }
+  std::cerr << std::endl;
+}
+
+template<class T>
+void Debug(const std::vector<T> &arr, const std::string &str) {
+  Debug(arr.data(), arr.size(), str);
+}
 
 }  // namespace utils
 }  // namespace marian

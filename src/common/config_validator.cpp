@@ -4,6 +4,8 @@
 #include "common/utils.h"
 #include "common/filesystem.h"
 
+#include <set>
+
 namespace marian {
 
 bool ConfigValidator::has(const std::string& key) const {
@@ -14,6 +16,10 @@ ConfigValidator::ConfigValidator(const YAML::Node& config)
     : config_(config),
       dumpConfigOnly_(config["dump-config"] && !config["dump-config"].as<std::string>().empty()
                       && config["dump-config"].as<std::string>() != "false") {}
+
+ConfigValidator::ConfigValidator(const YAML::Node& config, bool dumpConfigOnly)
+    : config_(config),
+      dumpConfigOnly_(dumpConfigOnly) {}
 
 ConfigValidator::~ConfigValidator() {}
 
@@ -28,6 +34,10 @@ void ConfigValidator::validateOptions(cli::mode mode) const {
       validateOptionsScoring();
       break;
     case cli::mode::embedding:
+      validateOptionsParallelData();
+      validateOptionsScoring();
+      break;
+    case cli::mode::evaluating:
       validateOptionsParallelData();
       validateOptionsScoring();
       break;
@@ -47,10 +57,19 @@ void ConfigValidator::validateOptions(cli::mode mode) const {
 
 void ConfigValidator::validateOptionsTranslation() const {
   auto models = get<std::vector<std::string>>("models");
-  auto configs = get<std::vector<std::string>>("config");
+  bool no_configs = true;
+  if(has("config")) {
+      auto configs = get<std::vector<std::string>>("config");
+      no_configs = configs.empty();
+  }
 
-  ABORT_IF(models.empty() && configs.empty(),
+  ABORT_IF(models.empty() && no_configs,
            "You need to provide at least one model file or a config file");
+
+#ifdef COMPILE_CPU
+  ABORT_IF(get<bool>("model-mmap") && get<size_t>("cpu-threads") == 0,
+           "Model MMAP is CPU-only, please use --cpu-threads");
+#endif
 
   for(const auto& modelFile : models) {
     filesystem::Path modelPath(modelFile);
@@ -129,6 +148,16 @@ void ConfigValidator::validateOptionsTraining() const {
                && !get<std::vector<std::string>>("valid-sets").empty(),
            errorMsg);
 
+  // check if --early-stopping-on has proper value
+  std::set<std::string> supportedStops = {"first", "all", "any"};
+  ABORT_IF(supportedStops.find(get<std::string>("early-stopping-on")) == supportedStops.end(),
+           "Supported options for --early-stopping-on are: first, all, any");
+
+  // check if --early-stopping-epsilon is provided for each validation metric or is a single value
+  auto epsilons = get<std::vector<float>>("early-stopping-epsilon");
+  ABORT_IF(epsilons.size() > 1 && epsilons.size() != get<std::vector<std::string>>("valid-metrics").size(),
+           "--early-stopping-epsilon must have as many values as there is --valid-metrics or only one");
+
   // validations for learning rate decaying
   ABORT_IF(get<float>("lr-decay") > 1.f, "Learning rate decay factor greater than 1.0 is unusual");
 
@@ -145,7 +174,7 @@ void ConfigValidator::validateOptionsTraining() const {
   // validate ULR options
   ABORT_IF((has("ulr") && get<bool>("ulr") && (get<std::string>("ulr-query-vectors") == ""
                                                || get<std::string>("ulr-keys-vectors") == "")),
-           "ULR enablign requires query and keys vectors specified with --ulr-query-vectors and "
+           "ULR requires query and keys vectors specified with --ulr-query-vectors and "
            "--ulr-keys-vectors option");
 
   // validate model quantization
@@ -178,8 +207,8 @@ void ConfigValidator::validateDevices(cli::mode /*mode*/) const {
   std::string help;
 
   // valid strings: '0', '0 1 2 3', '3 2 0 1'
-  pattern = "[0-9]+( *[0-9]+)*";
-  help = "Supported formats: '0 1 2 3'";
+  pattern = "([0-9]+|all)( *([0-9]+|all))*";
+  help = "Supported formats: '0 1 2 3' or 'all'";
 
   ABORT_IF(!regex::regex_match(devices, pattern),
            "the argument '{}' for option '--devices' is invalid. {}",

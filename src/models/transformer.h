@@ -69,7 +69,7 @@ public:
       // Hack for translating with length longer than trained embeddings
       // We check if the embedding matrix "Wpos" already exist so we can
       // check the number of positions in that loaded parameter.
-      // We then have to restict the maximum length to the maximum positon
+      // We then have to restrict the maximum length to the maximum positon
       // and positions beyond this will be the maximum position.
       Expr seenEmb = graph_->get("Wpos");
       int numPos = seenEmb ? seenEmb->shape()[-2] : maxLength;
@@ -147,8 +147,7 @@ public:
 
     int dimDepth = dimModel / dimHeads;
 
-    auto output
-        = reshape(input, {dimBatch * dimBeam, dimSteps, dimHeads, dimDepth});
+    auto output = reshape(input, {dimBatch * dimBeam, dimSteps, dimHeads, dimDepth});
 
     return transpose(output, {0, 2, 1, 3}); // [dimBatch*dimBeam, dimHeads, dimSteps, dimDepth]
   }
@@ -172,10 +171,12 @@ public:
     for(auto op : ops) {
       // dropout
       if (op == 'd')
-        output = dropout(output, dropProb);
+        output = dropout(output, dropProb, Shape::Axes({-2, -1}));
       // layer normalization
       else if (op == 'n')
         output = layerNorm(output, prefix, "_pre");
+      else if (op == 'r')
+        output = rmsNorm(output, prefix, "_pre");
       else
         ABORT("Unknown pre-processing operation '{}'", op);
     }
@@ -187,7 +188,7 @@ public:
     for(auto op : ops) {
       // dropout
       if(op == 'd')
-        output = dropout(output, dropProb);
+        output = dropout(output, dropProb, Shape::Axes({-2, -1}));
       // skip connection
       else if(op == 'a')
         output = output + prevInput;
@@ -201,6 +202,8 @@ public:
       // layer normalization
       else if(op == 'n')
         output = layerNorm(output, prefix);
+      else if(op == 'r')
+        output = rmsNorm(output, prefix);
       else
         ABORT("Unknown pre-processing operation '{}'", op);
     }
@@ -245,7 +248,7 @@ public:
 
     // multiplicative attention with flattened softmax
     float scale = 1.0f / std::sqrt((float)dk); // scaling to avoid extreme values due to matrix multiplication
-    auto z = bdot(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    auto z = bdot_legacy(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
 
     // mask out garbage beyond end of sequences
     z = z + mask;
@@ -260,7 +263,7 @@ public:
     weights = dropout(weights, inference_ ? 0 : opt<float>("transformer-dropout-attention"));
 
     // apply attention weights to values
-    auto output = bdot(weights, v);   // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
+    auto output = bdot_legacy(weights, v);   // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
 
     return output;
   }
@@ -279,6 +282,7 @@ public:
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimModel}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
     auto bq = graph_->param(prefix + "_bq", {       1, dimModel}, inits::zeros());
     auto qh = affine(q, Wq, bq);
+    
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
     Expr kh;
@@ -291,7 +295,8 @@ public:
       kh = cache_[prefix + "_keys"];                                                   // then return cached tensor
     }
     else {
-      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimModel}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
+      int dimKeys =  keys->shape()[-1]; // different than dimModel when using lemma and factors combined with concatenation
+      auto Wk = graph_->param(prefix + "_Wk", {dimKeys, dimModel}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
       auto bk = graph_->param(prefix + "_bk", {1,        dimModel}, inits::zeros());
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
@@ -305,7 +310,8 @@ public:
         && cache_[prefix + "_values"]->shape().elements() == values->shape().elements()) {
       vh = cache_[prefix + "_values"];
     } else {
-      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimModel}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
+      int dimValues = values->shape()[-1]; // different than dimModel when using lemma and factors combined with concatenation
+      auto Wv = graph_->param(prefix + "_Wv", {dimValues, dimModel}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
       auto bv = graph_->param(prefix + "_bv", {1,        dimModel}, inits::zeros());
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -357,9 +363,9 @@ public:
 
   Expr LayerAttention(std::string prefix,
                       Expr input,         // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
-                      const Expr& keys,   // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
-                      const Expr& values, // ...?
-                      const Expr& mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
+                      Expr keys,   // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
+                      Expr values, // ...?
+                      Expr mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
                       int dimHeads,
                       bool cache = false,
                       bool saveAttentionWeights = false) {
@@ -368,6 +374,12 @@ public:
     float dropProb = inference_ ? 0 : opt<float>("transformer-dropout");
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_Wo", opsPre, input, dropProb);
+
+    // fixes missing norm for keys and values in self-attention with pre-norm
+    if(input == keys)
+       keys = output;
+    if(input == values)
+       values = output;
 
     // multi-head self-attention over previous input
     output = MultiHead(prefix, dimModel, dimHeads, output, keys, values, mask, cache, saveAttentionWeights);
@@ -396,43 +408,39 @@ public:
                           opt<int>("transformer-heads"), /*cache=*/false);
   }
 
-  static inline
-  std::function<Expr(Expr)> activationByName(const std::string& actName)
-  {
-    if (actName == "relu")
-      return (ActivationFunction*)relu;
-    else if (actName == "swish")
-      return (ActivationFunction*)swish;
-    else if (actName == "gelu")
-      return (ActivationFunction*)gelu;
-    ABORT("Invalid activation name '{}'", actName);
-  }
-
-  Expr LayerFFN(std::string prefix, Expr input) const {
+  Expr LayerFFN(std::string prefix, Expr input, bool isDecoder=false) const {
     int dimModel = input->shape()[-1];
 
     float dropProb = inference_ ? 0 : opt<float>("transformer-dropout");
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_ffn", opsPre, input, dropProb);
 
+    auto actName = opt<std::string>("transformer-ffn-activation");
+
     int dimFfn = opt<int>("transformer-dim-ffn");
     int depthFfn = opt<int>("transformer-ffn-depth");
-    auto actFn = activationByName(opt<std::string>("transformer-ffn-activation"));
-    float ffnDropProb
-      = inference_ ? 0 : opt<float>("transformer-dropout-ffn");
-
+    if(isDecoder) {
+      int decDimFfn = opt<int>("transformer-decoder-dim-ffn", 0);
+      if(decDimFfn != 0)
+        dimFfn = decDimFfn;
+      
+      int decDepthFfn = opt<int>("transformer-decoder-ffn-depth", 0);
+      if(decDepthFfn != 0)
+        depthFfn = decDepthFfn;      
+    }
+    
     ABORT_IF(depthFfn < 1, "Filter depth {} is smaller than 1", depthFfn);
-
+    
+    float ffnDropProb = inference_ ? 0 : opt<float>("transformer-dropout-ffn");
     auto initFn = inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f);
 
     // the stack of FF layers
     for(int i = 1; i < depthFfn; ++i)
-      output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, initFn, actFn, ffnDropProb);
+        output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, initFn, actName, ffnDropProb);
     output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel, initFn);
 
     auto opsPost = opt<std::string>("transformer-postprocess");
-    output
-      = postProcess(prefix + "_ffn", opsPost, output, input, dropProb);
+    output = postProcess(prefix + "_ffn", opsPost, output, input, dropProb);
 
     return output;
   }
@@ -450,21 +458,21 @@ public:
     // FFN
     int dimAan   = opt<int>("transformer-dim-aan");
     int depthAan = opt<int>("transformer-aan-depth");
-    auto actFn = activationByName(opt<std::string>("transformer-aan-activation"));
+    auto actName = opt<std::string>("transformer-aan-activation");
     float aanDropProb = inference_ ? 0 : opt<float>("transformer-dropout-ffn");
 
     auto initFn = inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f);
 
     // the stack of AAN layers
     for(int i = 1; i < depthAan; ++i)
-      y = denseInline(y, prefix, /*suffix=*/std::to_string(i), dimAan, initFn, actFn, aanDropProb);
+      y = denseInline(y, prefix, /*suffix=*/std::to_string(i), dimAan, initFn, actName, aanDropProb);
     if(y->shape()[-1] != dimModel) // bring it back to the desired dimension if needed
       y = denseInline(y, prefix, std::to_string(depthAan), dimModel, initFn);
 
     bool noGate = opt<bool>("transformer-aan-nogate");
     if(!noGate) {
-      auto gi = denseInline(x, prefix, /*suffix=*/"i", dimModel, initFn, (ActivationFunction*)sigmoid);
-      auto gf = denseInline(y, prefix, /*suffix=*/"f", dimModel, initFn, (ActivationFunction*)sigmoid);
+      auto gi = denseInline(x, prefix, /*suffix=*/"i", dimModel, initFn, "sigmoid");
+      auto gf = denseInline(y, prefix, /*suffix=*/"f", dimModel, initFn, "sigmoid");
       y = gi * x + gf * y;
     }
 
@@ -530,6 +538,13 @@ public:
     output = rnn->transduce(output, prevDecoderState);
     decoderState = rnn->lastCellStates()[0];
     output = transposeTimeBatch(output);
+
+    if(opt<bool>("transformer-rnn-projection", false)) {
+      int dimModel = output->shape()[-1];
+      auto Wo = graph_->param(prefix + "_Wo", {dimModel, dimModel}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
+      auto bo = graph_->param(prefix + "_bo", {1, dimModel}, inits::zeros());
+      output = affine(output, Wo, bo);  // [-4: beam depth, -3: batch size, -2: 1, -1: vector dim]
+    }
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output = postProcess(prefix + "_ffn", opsPost, output, input, dropProb);
@@ -616,35 +631,6 @@ public:
   virtual void clear() override {}
 };
 
-class TransformerState : public DecoderState {
-public:
-  TransformerState(const rnn::States& states,
-                   Logits logProbs,
-                   const std::vector<Ptr<EncoderState>>& encStates,
-                   Ptr<data::CorpusBatch> batch)
-      : DecoderState(states, logProbs, encStates, batch) {}
-
-  virtual Ptr<DecoderState> select(const std::vector<IndexType>& hypIndices,   // [beamIndex * activeBatchSize + batchIndex]
-                                   const std::vector<IndexType>& batchIndices, // [batchIndex]
-                                   int beamSize) const override {
-
-    // @TODO: code duplication with DecoderState only because of isBatchMajor=true, should rather be a contructor argument of DecoderState?
-    
-    std::vector<Ptr<EncoderState>> newEncStates;
-    for(auto& es : encStates_) 
-      // If the size of the batch dimension of the encoder state context changed, subselect the correct batch entries    
-      newEncStates.push_back(es->getContext()->shape()[-2] == batchIndices.size() ? es : es->select(batchIndices));
-
-    // Create hypothesis-selected state based on current state and hyp indices
-    auto selectedState = New<TransformerState>(states_.select(hypIndices, beamSize, /*isBatchMajor=*/true), logProbs_, newEncStates, batch_); 
-
-    // Set the same target token position as the current state
-    // @TODO: This is the same as in base function.
-    selectedState->setPosition(getPosition());
-    return selectedState;
-  }
-};
-
 class DecoderTransformer : public Transformer<DecoderBase> {
   typedef Transformer<DecoderBase> Base;
   using Base::Base;
@@ -670,7 +656,9 @@ private:
         "vocab", opt<std::vector<std::string>>("vocabs")[batchIndex_], // for factored outputs
         "output-omit-bias", opt<bool>("output-omit-bias", false),
         "output-approx-knn", opt<std::vector<int>>("output-approx-knn", {}),
-        "lemma-dim-emb", opt<int>("lemma-dim-emb", 0)); // for factored outputs
+        "lemma-dim-emb", opt<int>("lemma-dim-emb", 0), // for factored outputs
+        "lemma-dependency", opt<std::string>("lemma-dependency", ""), // for factored outputs
+        "factors-combine", opt<std::string>("factors-combine", "sum")); // for factored outputs
 
     if(opt<bool>("tied-embeddings") || opt<bool>("tied-embeddings-all"))
       outputFactory.tieTransposed(opt<bool>("tied-embeddings-all") || opt<bool>("tied-embeddings-src") ? "Wemb" : prefix_ + "_Wemb");
@@ -699,12 +687,11 @@ public:
       start->set_name("decoder_start_state_" + std::to_string(batchIndex_));
       rnn::States startStates(opt<size_t>("dec-depth"), {start, start});
 
-      // don't use TransformerState for RNN layers
-      return New<DecoderState>(startStates, Logits(), encStates, batch);
+      return New<DecoderState>(startStates, Logits(), encStates, batch, /*isBatchMajor=*/false);
     }
     else {
       rnn::States startStates;
-      return New<TransformerState>(startStates, Logits(), encStates, batch);
+      return New<DecoderState>(startStates, Logits(), encStates, batch, /*isBatchMajor=*/true);
     }
   }
 
@@ -806,7 +793,7 @@ public:
       rnn::State prevDecoderState;
       if(prevDecoderStates.size() > 0)
         prevDecoderState = prevDecoderStates[i];
-
+      
       // self-attention
       std::string layerType = opt<std::string>("transformer-decoder-autoreg", "self-attention");
       rnn::State decoderState;
@@ -870,7 +857,7 @@ public:
       // remember decoder state
       decoderStates.push_back(decoderState);
 
-      query = LayerFFN(prefix_ + "_l" + layerNo + "_ffn", query); // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
+      query = LayerFFN(prefix_ + "_l" + layerNo + "_ffn", query, /*isDecoder=*/true); // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
 
       checkpoint(query);
     }
@@ -884,7 +871,6 @@ public:
     auto decoderContext = transposeTimeBatch(query); // [-4: beam depth=1, -3: max length, -2: batch size, -1: vector dim]
 
     //************************************************************************//
-
     // final feed-forward layer (output)
     if(shortlist_)
       output_->setShortlist(shortlist_);
@@ -893,11 +879,9 @@ public:
     // return unormalized(!) probabilities
     Ptr<DecoderState> nextState;
     if (opt<std::string>("transformer-decoder-autoreg", "self-attention") == "rnn") {
-      nextState = New<DecoderState>(
-        decoderStates, logits, state->getEncoderStates(), state->getBatch());
+      nextState = New<DecoderState>(decoderStates, logits, state->getEncoderStates(), state->getBatch(), state->isBatchMajor());
     } else {
-      nextState = New<TransformerState>(
-        decoderStates, logits, state->getEncoderStates(), state->getBatch());
+      nextState = New<DecoderState>(decoderStates, logits, state->getEncoderStates(), state->getBatch(), state->isBatchMajor());
     }
     nextState->setPosition(state->getPosition() + 1);
     return nextState;

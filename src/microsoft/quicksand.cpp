@@ -1,5 +1,7 @@
 #include "quicksand.h"
 #include "marian.h"
+#include <unordered_map>
+#include <mutex>
 
 #if MKL_FOUND
 #include "mkl.h"
@@ -11,6 +13,7 @@
 #include "data/alignment.h"
 #include "data/vocab_base.h"
 #include "tensors/cpu/expression_graph_packable.h"
+#include "layers/lsh.h"
 
 #if USE_FBGEMM
 #include "fbgemm/Utils.h"
@@ -59,6 +62,8 @@ private:
 
   std::vector<Ptr<Vocab>> vocabs_;
 
+  static inline std::unordered_map<std::string, YAML::Node> configCache_;
+  static inline std::mutex configCacheMutex_;
 public:
   BeamSearchDecoder(Ptr<Options> options,
                     const std::vector<const void*>& ptrs,
@@ -77,7 +82,7 @@ public:
     graph_->setDevice(deviceId, device_);
 
 #if MKL_FOUND
-    mkl_set_num_threads(options->get<int>("mkl-threads", 1));
+    mkl_set_num_threads(options_->get<int>("mkl-threads", 1));
 #endif
 
     std::vector<std::string> models
@@ -86,16 +91,27 @@ public:
     for(int i = 0; i < models.size(); ++i) {
       Ptr<Options> modelOpts = New<Options>();
 
+      // serializing this YAML can be costly, so read from cache
       YAML::Node config;
-      if(io::isBin(models[i]) && ptrs_[i] != nullptr)
-        io::getYamlFromModel(config, "special:model.yml", ptrs_[i]);
-      else
-        io::getYamlFromModel(config, "special:model.yml", models[i]);
+      auto cachedConfig = getConfigFromCache(models[i]);
+      if(cachedConfig != nullptr) {
+        config = *cachedConfig;
+      } else {
+        if(io::isBin(models[i]) && ptrs_[i] != nullptr)
+          io::getYamlFromModel(config, "special:model.yml", ptrs_[i]);
+        else
+          io::getYamlFromModel(config, "special:model.yml", models[i]);
+        writeConfigToCache(config, models[i]);
+      }
 
       modelOpts->merge(options_);
       modelOpts->merge(config);
 
-      std::cerr << modelOpts->asYamlString() << std::flush; // @TODO: take a look at why this is even here.
+      // serializing this to YAML is expensive. we only want to do this once 
+      // we can use whether we loaded the cache from config as a signal 
+      if(cachedConfig == nullptr){
+        std::cerr << modelOpts->asYamlString() << std::flush;
+      }
 
       auto encdec = models::createModelFromOptions(modelOpts, models::usage::translation);
 
@@ -113,6 +129,24 @@ public:
     for(auto scorer : scorers_) {
       scorer->init(graph_);
     }
+
+    // run parameter init once, this is required for graph_->get("parameter name") to work correctly
+    graph_->forward();
+  }
+
+  YAML::Node* getConfigFromCache(std::string key){
+    const std::lock_guard<std::mutex> lock(configCacheMutex_);
+    bool inCache = configCache_.find(key) != configCache_.end();
+    if (inCache) {
+      return &configCache_[key];
+    } else {
+      // return null if no cache hit
+      return nullptr;
+    }
+  }
+  void writeConfigToCache(YAML::Node config, std::string key) {
+    const std::lock_guard<std::mutex> lock(configCacheMutex_);
+    configCache_[key] = config;
   }
 
   void setWorkspace(uint8_t* data, size_t size) override { device_->set(data, size); }
@@ -120,8 +154,21 @@ public:
   QSNBestBatch decode(const QSBatch& qsBatch,
                       size_t maxLength,
                       const std::unordered_set<WordIndex>& shortlist) override {
-    if(shortlist.size() > 0) {
-      auto shortListGen = New<data::FakeShortlistGenerator>(shortlist);
+    
+    std::vector<int> lshOpts = options_->get<std::vector<int>>("output-approx-knn", {});
+    ABORT_IF(lshOpts.size() != 0 && lshOpts.size() != 2, "--output-approx-knn takes 2 parameters");
+    ABORT_IF(lshOpts.size() == 2 && shortlist.size() > 0, "LSH and shortlist cannot be used at the same time");
+
+    if(lshOpts.size() == 2 || shortlist.size() > 0) {
+      Ptr<data::ShortlistGenerator> shortListGen;
+      // both ShortListGenerators are thin wrappers, hence no problem with calling this per query
+      if(lshOpts.size() == 2) {
+        // Setting abortIfDynamic to true disallows memory allocation for LSH parameters, this is specifically for use in Quicksand.
+        // If we want to use the LSH in Quicksand we need to create a binary model that contains the LSH parameters via conversion.
+        shortListGen = New<data::LSHShortlistGenerator>(lshOpts[0], lshOpts[1], vocabs_[1]->lemmaSize(), /*abortIfDynamic=*/true);
+      } else {
+        shortListGen = New<data::FakeShortlistGenerator>(shortlist);
+      } 
       for(auto scorer : scorers_)
         scorer->setShortlistGenerator(shortListGen);
     }
@@ -161,8 +208,7 @@ public:
         auto score = std::get<2>(result);
         // determine alignment if present
         AlignmentSets alignmentSets;
-        if (options_->hasAndNotEmpty("alignment"))
-        {
+        if (options_->hasAndNotEmpty("alignment")) {
           float alignmentThreshold;
           auto alignment = options_->get<std::string>("alignment"); // @TODO: this logic now exists three times in Marian
           if (alignment == "soft")
@@ -248,7 +294,7 @@ DecoderCpuAvxVersion parseCpuAvxVersion(std::string name) {
 // This function converts an fp32 model into an FBGEMM based packed model.
 // marian defined types are used for external project as well.
 // The targetPrec is passed as int32_t for the exported function definition.
-bool convertModel(std::string inputFile, std::string outputFile, int32_t targetPrec) {
+bool convertModel(std::string inputFile, std::string outputFile, int32_t targetPrec, int32_t lshNBits) {
   std::cerr << "Converting from: " << inputFile << ", to: " << outputFile << ", precision: " << targetPrec << std::endl;
 
   YAML::Node config;
@@ -260,12 +306,33 @@ bool convertModel(std::string inputFile, std::string outputFile, int32_t targetP
   graph->setDevice(CPU0);
 
   graph->load(inputFile);
-  graph->forward();
+
+  // MJD: Note, this is a default settings which we might want to change or expose. Use this only with Polonium students.
+  // The LSH will not be used by default even if it exists in the model. That has to be enabled in the decoder config.
+  std::string lshOutputWeights = "Wemb";
+  bool addLsh = lshNBits > 0;
+  if(addLsh) {
+    std::cerr << "Adding LSH to model with hash size " << lshNBits << std::endl;
+    // Add dummy parameters for the LSH before the model gets actually initialized.
+    // This create the parameters with useless values in the tensors, but it gives us the memory we need.
+    graph->setReloaded(false);
+    lsh::addDummyParameters(graph, /*paramInfo=*/{lshOutputWeights, "lsh_output_codes", "lsh_output_rotation", lshNBits});
+    graph->setReloaded(true);
+  }
+
+  graph->forward();  // run the initializers
+
+  if(addLsh) {
+    // After initialization, hijack the paramters for the LSH and force-overwrite with correct values.
+    // Once this is done we can just pack and save as normal.
+    lsh::overwriteDummyParameters(graph, /*paramInfo=*/{lshOutputWeights, "lsh_output_codes", "lsh_output_rotation", lshNBits});
+  }
 
   Type targetPrecType = (Type) targetPrec;
   if (targetPrecType == Type::packed16 
       || targetPrecType == Type::packed8avx2 
-      || targetPrecType == Type::packed8avx512) {
+      || targetPrecType == Type::packed8avx512
+      || (targetPrecType == Type::float32 && addLsh)) { // only allow non-conversion to float32 if we also use the LSH
     graph->packAndSave(outputFile, configStr.str(), targetPrecType);
     std::cerr << "Conversion Finished." << std::endl;
   } else {
