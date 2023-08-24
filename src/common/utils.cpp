@@ -70,21 +70,19 @@ void split(const std::string& line,
 // the function guarantees that the output has as many elements as requested
 void splitTsv(const std::string& line, std::vector<std::string>& fields, size_t numFields) {
   fields.clear();
+  fields.resize(numFields); // make sure there is as many elements as requested
 
   size_t begin = 0;
   size_t pos = 0;
   for(size_t i = 0; i < numFields; ++i) {
     pos = line.find('\t', begin);
     if(pos == std::string::npos) {
-      fields.push_back(line.substr(begin));
+      fields[i] = line.substr(begin);
       break;
     }
-    fields.push_back(line.substr(begin, pos - begin));
+    fields[i] = line.substr(begin, pos - begin);
     begin = pos + 1;
   }
-
-  if(fields.size() < numFields)  // make sure there is as many elements as requested
-    fields.resize(numFields);
 
   ABORT_IF(pos != std::string::npos, "Excessive field(s) in the tab-separated line: '{}'", line);
 }
@@ -182,7 +180,8 @@ std::string exec(const std::string& cmd, const std::vector<std::string>& args /*
 
 std::pair<std::string, int> hostnameAndProcessId() {  // helper to get hostname:pid
 #ifdef _WIN32
-  std::string hostname = getenv("COMPUTERNAME");
+  const char* res = getenv("COMPUTERNAME");
+  std::string hostname = res ? std::string(res) : ""; 
   auto processId = (int)GetCurrentProcessId();
 #else
   static std::string hostname = []() {  // not sure if gethostname() is expensive. This way we call it only once.
@@ -193,6 +192,15 @@ std::pair<std::string, int> hostnameAndProcessId() {  // helper to get hostname:
   auto processId = (int)getpid();
 #endif
   return {hostname, processId};
+}
+
+// returns MPI rank from environment variable if set, otherwise 0
+int getMPIRankEnv() {
+  const char* rank = getenv("OMPI_COMM_WORLD_RANK");
+  if(rank)
+    return std::atoi(rank);
+  else
+    return 0;
 }
 
 // format a long number with comma separators
@@ -429,6 +437,36 @@ double parseNumber(std::string param) {
   param.erase(it, param.end()); // since we have that iterator now, we might as well shrink to fit
   return factor * parseDouble(param);
 }
+
+}  // namespace utils
+}  // namespace marian
+
+
+// Code for demangling gnu g++ type names, closing/re-opening namespaces to keep things local
+// This is used to determine Layer type names for display and nameing.
+#ifdef __GNUG__
+#include <cxxabi.h>
+#endif
+
+namespace marian {
+namespace utils {
+
+#ifdef __GNUG__ // gnu g++ and clang seem to do this similarly
+std::string cxxTypeNameDemangle(const char* name) {
+  int status = -4; // some arbitrary value to eliminate the compiler warning
+  // __cxa_demangle allocates a string that has to be freed, we pass the deallocation function
+  std::unique_ptr<char, void(*)(void*)> res(
+      abi::__cxa_demangle(name, NULL, NULL, &status),
+      std::free
+  );
+  return (status == 0) ? res.get() : name;
+}
+#else
+// does nothing if not g++, should be correct for MSVC
+std::string cxxTypeNameDemangle(const char* name) {
+  return name;
+}
+#endif
 
 }  // namespace utils
 }  // namespace marian

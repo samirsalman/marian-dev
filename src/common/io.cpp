@@ -56,6 +56,18 @@ void getYamlFromModel(YAML::Node& yaml,
     yaml = YAML::Load(item.data());
 }
 
+// Load YAML from item
+void getYamlFromModel(YAML::Node& yaml,
+                      const std::string& varName,
+                      const std::vector<Item>& items) {
+    for(auto& item : items) {
+      if(item.name == varName) {
+        yaml = YAML::Load(item.data());
+        return;
+      }
+    }
+}
+
 void addMetaToItems(const std::string& meta,
                     const std::string& varName,
                     std::vector<io::Item>& items) {
@@ -78,6 +90,9 @@ void addMetaToItems(const std::string& meta,
 void loadItemsFromNpz(const std::string& fileName, std::vector<Item>& items) {
   auto numpy = cnpy::npz_load(fileName);
   for(auto it : numpy) {
+    ABORT_IF(
+        it.second->fortran_order, "Numpy item '{}' is not stored in row-major order", it.first);
+
     Shape shape;
     shape.resize(it.second->shape.size());
     for(size_t i = 0; i < it.second->shape.size(); ++i)

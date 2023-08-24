@@ -5,10 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-
 ## [Unreleased]
 
 ### Added
+- Added `--no-spm-encode` option, allowing the model to use vocabulary IDs directly to train/decode.
+- Added --custom-fallbacks option that allows to specify a list of option sets that get traversed for subsequent fallbacks upon divergence
+- Added --overwrite-checkpoint option that (when set to false) can be used to dump checkpoints with iteration numbers.   
+- Implementations of COMET-20 (reference-based) and BLEURT-20 for inference with conversion scripts.
+- `./marian evaluate` sub command for evaluation with COMET-QE-20, COMET-20 and BLEURT-20
+- A bunch of scripts for metrics use and early MBR experiments
+- LSH vocab filtering for GPU. Speed is not competitive with non-LSH. Checking in for completeness and possible future use of LSH on GPU for non-filtering stuff
+- Added --throw-on-divergence and --fp16-fallback-to-fp32 options to detect (fp16 and fp32) and recover (only fp16) 
+  diverged runs. If not recoverable, exception gets rethrown and goes unhandled to force fatal error and shutdown.
+- Re-implementation of COMET-QE for inference and training; conversion scripts from Unbabel-Comet to Marian.
+- Validator that generates embeddings and can be used during COMET training with an external script.
+- New experimental layer framework for Transformer-like models.
+
+### Fixed
+- Fixed wrong paramter name for norm in new layer framework
+- Fixed unit test for LayerNorm
+- Only collect batch statistics during mini-batch-fit up to actual max-length.
+- Implemented fully correct version of GELU instead of using bad approximatin via Swish.
+- Handle copying from fp32 or fp16 embeddings in embedder mode correctly.
+- Correct defaults for factored embeddings such that shared library use works (move out of config.h/cpp).
+
+### Changed
+- Removed --num-devices N option that wasn't really used by anyone (I assume).
+
+
+## [1.12.0] - 2023-02-20
+
+### Added
+- Fused inplace-dropout in FFN layer in Transformer
+- `--force-decode` option for marian-decoder
+- `--output-sampling` now works with ensembles (requires proper normalization via e.g `--weights 0.5 0.5`)
+- `--valid-reset-all` option
+
+### Fixed
+- Make concat factors not break old vector implementation
+- Use allocator in hashing
+- Read/restore checkpoints from main process only when training with MPI
+- Multi-loss casts type to first loss-type before accumulation (aborted before due to missing cast)
+- Throw `ShapeSizeException` if total expanded shape size exceeds numeric capacity of the maximum int value (2^31-1)
+- During mini-batch-fitting, catch `ShapeSizeException` and use another sizing hint. Aborts outside mini-batch-fitting.
+- Fix incorrect/missing gradient accumulation with delay > 1 or large effective batch size of biases of affine operations.
+- Fixed case augmentation with multi-threaded reading.
+- Scripts using PyYAML now use `safe_load`; see https://msg.pyyaml.org/load
+- Fixed check for `fortran_ordering` in cnpy
+- Fixed fp16 training/inference with factors-combine concat method
+- Fixed clang 13.0.1 compatibility
+- Fixed potential vulnerabilities from lxml<4.9.1 or mistune<2.0.31
+- Fixed the `--best-deep` RNN alias not setting the s2s model type
+
+### Changed
+- Parameter synchronization in local sharding model now executes hash checksum before syncing
+- Make guided-alignment faster via sparse memory layout, add alignment points for EOS, remove losses other than ce
+- Negative `--workspace -N` value allocates workspace as total available GPU memory minus N megabytes.
+- Set default parameters for cost-scaling to 8.f 10000 1.f 8.f, i.e. when scaling scale by 8 and do not try to automatically scale up or down. This seems most stable.
+- Make guided-alignment faster via sparse memory layout, add alignment points for EOS, remove losses other than ce.
+- Changed minimal C++ standard to C++-17
+- Faster LSH top-k search on CPU
+- Updated intgemm to the latest upstream version
+- Parameters in npz files are no longer implicitly assumed to be row-ordered. Non row-ordered parameters will result in an abort
+- Updated Catch2 header from 2.10.1 to 2.13.9
+
+## [1.11.0] - 2022-02-08
+
+### Added
+- Parallelized data reading with e.g. `--data-threads 8`
+- Top-k sampling during decoding with e.g. `--output-sampling topk 10`
+- Improved mixed precision training with `--fp16`
+- Set FFN width in decoder independently from encoder with e.g. `--transformer-dim-ffn 4096 --transformer-decoder-dim-ffn 2048`
+- Adds option `--add-lsh` to marian-conv which allows the LSH to be memory-mapped.
+- Early stopping based on first, all, or any validation metrics via `--early-stopping-on`
+- Compute 8.6 support if using CUDA>=11.1
+- Support for RMSNorm as drop-in replace for LayerNorm from `Biao Zhang; Rico Sennrich (2019). Root Mean Square Layer Normalization`. Enabled in Transformer model via `--transformer-postprocess dar` instead of `dan`.
+- Extend suppression of unwanted output symbols, specifically "\n" from default vocabulary if generated by SentencePiece with byte-fallback. Deactivates with --allow-special
+- Allow for fine-grained CPU intrinsics overrides when BUILD_ARCH != native e.g. -DBUILD_ARCH=x86-64 -DCOMPILE_AVX512=off
+- Adds custom bias epilogue kernel.
+- Adds support for fusing relu and bias addition into gemms when using cuda 11.
 - Better suppression of unwanted output symbols, specifically "\n" from SentencePiece with byte-fallback. Can be deactivated with --allow-special
 - Display decoder time statistics with marian-decoder --stat-freq 10 ...
 - Support for MS-internal binary shortlist
@@ -19,8 +94,20 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Dynamic gradient-scaling with `--dynamic-gradient-scaling`.
 - Add unit tests for binary files.
 - Fix compilation with OMP
+- Added `--model-mmap` option to enable mmap loading for CPU-based translation
+- Compute aligned memory sizes using exact sizing
+- Support for loading lexical shortlist from a binary blob
+- Integrate a shortlist converter (which can convert a text lexical shortlist to a binary shortlist) into marian-conv with --shortlist option
 
 ### Fixed
+- Fix AVX2 and AVX512 detection on MacOS
+- Add GCC11 support into FBGEMM
+- Added pragma to ignore unused-private-field error on elementType_ on macOS
+- Do not set guided alignments for case augmented data if vocab is not factored
+- Various fixes to enable LSH in Quicksand
+- Added support to MPIWrappest::bcast (and similar) for count of type size_t
+- Adding new validation metrics when training is restarted and --reset-valid-stalled is used
+- Missing depth-scaling in transformer FFN
 - Fixed an issue when loading intgemm16 models from unaligned memory.
 - Fix building marian with gcc 9.3+ and FBGEMM
 - Find MKL installed under Ubuntu 20.04 via apt-get
@@ -32,10 +119,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Fixed loading binary models on architectures where `size_t` != `uint64_t`.
 - Missing float template specialisation for elem::Plus
 - Broken links to MNIST data sets
+- Enforce validation for the task alias in training mode.
 
 ### Changed
+- MacOS marian uses Apple Accelerate framework by default, as opposed to openblas/mkl.
+- Optimize LSH for speed by treating is as a shortlist generator. No option changes in decoder
+- Set REQUIRED_BIAS_ALIGNMENT = 16 in tensors/gpu/prod.cpp to avoid memory-misalignment on certain Ampere GPUs.
+- For BUILD_ARCH != native enable all intrinsics types by default, can be disabled like this: -DCOMPILE_AVX512=off
 - Moved FBGEMM pointer to commit c258054 for gcc 9.3+ fix
-- Remove TC_MALLOC as an optional build depdendency. Doesn't seem to actually do anything anymore.
 - Change compile options a la -DCOMPILE_CUDA_SM35 to -DCOMPILE_KEPLER, -DCOMPILE_MAXWELL,
 -DCOMPILE_PASCAL, -DCOMPILE_VOLTA, -DCOMPILE_TURING and -DCOMPILE_AMPERE
 - Disable -DCOMPILE_KEPLER, -DCOMPILE_MAXWELL by default.
@@ -43,6 +134,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Developer documentation framework based on Sphinx+Doxygen+Breathe+Exhale
 - Expresion graph documentation (#788)
 - Graph operators documentation (#801)
+- Remove unused variable from expression graph
+- Factor groups and concatenation: doc/factors.md
 
 ## [1.10.0] - 2021-02-06
 
@@ -95,6 +188,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Added a few missing header files in shortlist.h and beam_search.h.
 - Improved handling for receiving SIGTERM during training. By default, SIGTERM triggers 'save (now) and exit'. Prior to this fix, batch pre-fetching did not check for this sigal, potentially delaying exit considerably. It now pays attention to that. Also, the default behaviour of save-and-exit can now be disabled on the command line with --sigterm exit-immediately.
 - Fix the runtime failures for FASTOPT on 32-bit builds (wasm just happens to be 32-bit) because it uses hashing with an inconsistent mix of uint64_t and size_t.
+- fix beam_search ABORT_IF(beamHypIdx >= beam.size(), "Out of bounds beamHypIdx??"); when enable openmp and OMP_NUM_THREADS > 1
 
 ### Changed
 - Remove `--clip-gemm` which is obsolete and was never used anyway

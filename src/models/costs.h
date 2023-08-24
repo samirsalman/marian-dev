@@ -217,6 +217,12 @@ public:
 
   Ptr<IModel> getModel() { return model_; }
 
+  void load(Ptr<ExpressionGraph> graph,
+            const std::vector<io::Item>& items,
+            bool markedReloaded) override {
+    model_->load(graph, items, markedReloaded);
+  }
+
   virtual void load(Ptr<ExpressionGraph> graph,
                     const std::string& name,
                     bool markedReloaded = true) override {
@@ -264,6 +270,12 @@ public:
   Ptr<IModel> getModel() { return model_; }
 
   virtual void load(Ptr<ExpressionGraph> graph,
+                    const std::vector<io::Item>& items,
+                    bool markReloaded = true) override {
+    model_->load(graph, items, markReloaded);
+  }
+
+  virtual void load(Ptr<ExpressionGraph> graph,
                     const std::string& name,
                     bool markedReloaded = true) override {
     model_->load(graph, name, markedReloaded);
@@ -297,22 +309,6 @@ public:
   virtual Ptr<DecoderState> apply(Ptr<DecoderState> state) override;
 };
 
-// Gumbel-max noising for sampling during beam-search
-// Seems to work well enough with beam-size=1. Turn on
-// with --output-sampling during translation with marian-decoder
-class GumbelSoftmaxStep : public ILogProbStep {
-public:
-  virtual ~GumbelSoftmaxStep() {}
-  virtual Ptr<DecoderState> apply(Ptr<DecoderState> state) override {
-    state->setLogProbs(state->getLogProbs().applyUnaryFunctions(
-        [](Expr logits) {  // lemma gets gumbelled
-          return logsoftmax(logits + constant_like(logits, inits::gumbel()));
-        },
-        logsoftmax));  // factors don't
-    return state;
-  }
-};
-
 // class to wrap an IEncoderDecoder and a ILogProbStep that are executed in sequence,
 // wrapped again in the IEncoderDecoder interface
 // @TODO: seems we are conflating an interface defition with its implementation?
@@ -324,6 +320,12 @@ protected:
 
 public:
   Stepwise(Ptr<IEncoderDecoder> encdec, Ptr<ILogProbStep> cost) : encdec_(encdec), cost_(cost) {}
+
+  virtual void load(Ptr<ExpressionGraph> graph,
+                    const std::vector<io::Item>& items,
+                    bool markedReloaded = true) override {
+    encdec_->load(graph, items, markedReloaded);
+  }
 
   virtual void load(Ptr<ExpressionGraph> graph,
                     const std::string& name,

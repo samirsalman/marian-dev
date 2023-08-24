@@ -10,7 +10,7 @@ namespace marian {
 class IVocab;
 
 // Wrapper around vocabulary types. Can choose underlying
-// vocabulary implementation (vImpl_) based on speficied path
+// vocabulary implementation (vImpl_) based on specified path
 // and suffix.
 // Vocabulary implementations can currently be:
 // * DefaultVocabulary for YAML (*.yml and *.yaml) and TXT (any other non-specific ending)
@@ -60,6 +60,9 @@ public:
 
   // number of vocabulary items
   size_t size() const;
+
+  // number of lemma items. Same as size() except in factored models
+  size_t lemmaSize() const;
 
   // number of vocabulary items
   std::string type() const;

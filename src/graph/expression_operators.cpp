@@ -1,4 +1,5 @@
 #include "graph/expression_operators.h"
+#include "common/definitions.h"
 #include "layers/constructors.h"
 
 #include "graph/node_operators.h"
@@ -26,14 +27,23 @@ Expr checkpoint(Expr a) {
   return a;
 }
 
-Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type, 
-            LambdaNodeFunctor fwd) {
-  return Expression<LambdaNodeOp>(nodes, shape, type, fwd);
+Expr removeAsRoot(Expr a) {
+  a->graph()->removeAsRoot(a); // ugly, hence why hidden here
+  return a;
 }
 
-Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type, 
-            LambdaNodeFunctor fwd, LambdaNodeFunctor bwd) {
-  return Expression<LambdaNodeOp>(nodes, shape, type, fwd, bwd);
+Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type,
+            LambdaNodeFunctor fwd, size_t hash) {
+  return Expression<LambdaNodeOp>(nodes, shape, type, fwd, hash);
+}
+
+Expr lambda(const std::vector<Expr>& nodes, Shape shape, Type type,
+            LambdaNodeFunctor fwd, LambdaNodeFunctor bwd, size_t hash) {
+  return Expression<LambdaNodeOp>(nodes, shape, type, fwd, bwd, hash);
+}
+
+Expr callback(Expr node, LambdaNodeCallback call) {
+  return Expression<CallbackNodeOp>(node, call);
 }
 
 // logistic function. Note: scipy name is expit()
@@ -85,7 +95,7 @@ Expr swish(Expr a) {
 }
 
 Expr gelu(Expr a) {
-  return Expression<SwishNodeOp>(a, 1.702f);
+  return Expression<GeluNodeOp>(a);
 }
 
 Expr operator-(Expr a) {
@@ -147,6 +157,16 @@ Expr2 topk(Expr a, int k, int axis, bool descending) {
   auto topkVal = Expression<TopKNodeOp>(a, k, -1, descending); // axis=-1 is OK now as we swapped
   auto topkIdx = std::dynamic_pointer_cast<TopKNodeOp>(topkVal)->tupleView(); // get a view on the top-k values
   return std::make_tuple(swapAxes(topkVal, axis, -1), swapAxes(topkIdx, axis, -1)); // non-op if axes are the same
+}
+
+Expr topkIndices(Expr a, int k, int axis, bool descending) {
+  const auto& [values, indices] = topk(a, k, axis, descending);
+  return choose({values, indices}, 1);
+}
+
+Expr topkValues(Expr a, int k, int axis, bool descending) {
+  const auto& [values, indices] = topk(a, k, axis, descending);
+  return choose({values, indices}, 0);
 }
 
 Expr2 argmax(Expr a, int axis) {
@@ -281,6 +301,8 @@ Expr operator/(float a, Expr b) {
 /*********************************************************/
 
 Expr concatenate(const std::vector<Expr>& concats, int ax) {
+  if(concats.size() == 1)
+    return concats[0];
   return Expression<ConcatenateNodeOp>(concats, ax);
 }
 
@@ -341,16 +363,43 @@ Expr flatten_2d(Expr a) {
 }
 
 Expr stopGradient(Expr a) {
+#if 0 
+  // This is a different implementation which is more reliable than the original, 
+  // but it introduces a full copy which hogs memory. Keeping it around for now
+  // to decide later which one to use.
+
+  auto fwd = [](Expr output, const std::vector<Expr> inputs) {
+    CopyCast(output->val(), inputs[0]->val());
+  };
+
+  auto bwd = [](Expr output, const std::vector<Expr> inputs) {
+    /*Dummy*/
+  };
+
+  return lambda({a}, a->shape(), a->value_type(), fwd, bwd, (size_t)&fwd);
+#else
   // implemented as a dummy reshape that is not trainable
   auto res = Expression<ReshapeNodeOp>(a, a->shape());
   res->setTrainable(false);
   return res;
+#endif
+}
+
+Expr choose(std::vector<Expr> nodes, size_t index) {
+  return Expression<ChooseNodeOp>(nodes, index);
 }
 
 // gather() -- gather arbitrary elements along an axis; batched or non-batched
 Expr gather(Expr a, int axis, Expr indices) {
   return Expression<GatherNodeOp>(a, axis, indices);
 }
+
+// scatter() -- scatter arbitrary elements along an axis; batched or non-batched
+// This is the reverse operation to gather.
+Expr scatter(Expr a, int axis, Expr indices, Expr source) {
+  return Expression<ScatterNodeOp>(a, axis, indices, source);
+}
+
 
 // index_select() -- gather arbitrary elements along an axis from an unbatched
 // input 'a'. Indices are specified as a 1D vector.
@@ -431,7 +480,7 @@ Expr std(Expr a, int ax) {
   return Expression<ReduceNodeOp>(a - mean(a, ax), ax, ReduceNodeOpCode::rms);
 }
 
-Expr var(Expr a, int ax) { 
+Expr var(Expr a, int ax) {
   if(a->shape()[ax] == 1) // nothing to reduce, var(a) = 0
     return a - a;
   return Expression<ReduceNodeOp>(a - mean(a, ax), ax, ReduceNodeOpCode::meanSqr);
@@ -482,7 +531,45 @@ Expr dot(Expr a, Expr b, bool transA, bool transB, float scale) {
   // --optimize --cpu-thread=N with N > 0 are set.
   if(device == DeviceType::cpu) {
     if(isFloat(aElementType) && isFloat(bElementType)) {
-      return Expression<DotNodeOp>(a, b, transA, transB, scale);
+      if(b->memoize() && (a->graph()->getBackend()->getGemmType() == GemmType::FbFp16Packed ||
+        a->graph()->getBackend()->getGemmType() == GemmType::FbInt8Packed)) {
+#if USE_FBGEMM
+        if(a->graph()->getBackend()->getGemmType() == GemmType::FbFp16Packed) {
+          auto packedB = cpu::variant::pack(
+              marian::Type::packed16, b, cpu::variant::PackMatrix::B, transB);
+          return cpu::variant::dot(marian::Type::packed16,
+              a, packedB, b->shape(), transA, transB, scale);
+        } else {
+          float quantizeRange = b->graph()->getBackend()->getQuantizeRange();
+          if(fbgemm::fbgemmHasAvx512Support()) {
+            auto packedB = cpu::variant::pack(marian::Type::packed8avx512,
+                                              b,
+                                              cpu::variant::PackMatrix::B,
+                                              transB,
+                                              quantizeRange);
+            return cpu::variant::dot(marian::Type::packed8avx512,
+                a, packedB, b->shape(), transA, transB, scale);
+          } else if(fbgemm::fbgemmHasAvx2Support()) {
+            auto packedB = cpu::variant::pack(marian::Type::packed8avx2,
+                                              b,
+                                              cpu::variant::PackMatrix::B,
+                                              transB,
+                                              quantizeRange);
+            return cpu::variant::dot(marian::Type::packed8avx2,
+                a, packedB, b->shape(), transA, transB, scale);
+          } else {
+            ABORT(
+                "AVX2 is not available. At least, AVX2 is needed to use fbgemm-based packed "
+                "GEMM");
+          }
+        }
+#else
+        ABORT("Packed GEMM is not available in this build");
+#endif  // USE_FBGEMM
+      } else {
+        return Expression<DotNodeOp>(
+          a, b, transA, transB, scale);
+      }
     } else if(isFloat(aElementType) && isIntgemm(bElementType)) {
       return cpu::integer::affineOrDot(a, b, nullptr, transA, transB, scale);
     } else if(isFloat(aElementType) && isPacked(bElementType)) {
@@ -494,7 +581,8 @@ Expr dot(Expr a, Expr b, bool transA, bool transB, float scale) {
       // and this cpu lookup is executed only once and the state is kept in FBGEMM.
       if(fbgemm::fbgemmHasAvx2Support()) {
         // This variant of dot product can handle matrix multiplications with packed8 and packed16 weight matrix (B).
-        return cpu::variant::dot(a,
+        return cpu::variant::dot(b->value_type(),
+                                 a,
                                  b,
                                  b->shape(),
                                  transA,
@@ -518,17 +606,25 @@ Expr bdot(Expr a, Expr b, bool transA, bool transB, float scale) {
   return Expression<DotBatchedNodeOp>(a, b, transA, transB, scale);
 }
 
-static Expr affineDefault(Expr a, Expr b, Expr bias, bool transA, bool transB, float scale) {
-  // general version, MKL, CBlas or CUDA
+Expr bdot_legacy(Expr a, Expr b, bool transA, bool transB, float scale) {
+  return Expression<DotBatchedLegacyNodeOp>(a, b, transA, transB, scale);
+}
 
-  int rows = a->shape().elements() / a->shape()[-1];
-  Expr ones = a->graph()->ones({ rows, 1 });
-  std::vector<Expr> nodes = { a, b, bias, ones };
+Expr affineDefault(Expr a, Expr b, Expr bias, bool transA, bool transB, float scale) {
+  // general version, MKL, CBlas or CUDA
+  std::vector<Expr> nodes = { a, b, bias };
+
+  auto graph = a->graph();
+  if(!graph->isInference()) {
+    int rows = a->shape().elements() / a->shape()[-1];
+    Expr ones = a->graph()->ones({ rows, 1 }, bias->value_type());
+    nodes.push_back(ones);
+  }
   return Expression<AffineNodeOp>(nodes, transA, transB, scale);
 }
 
-// This operation used to implement auto-tuning. We have removed it for now due to complexity, but plan to revisit it in the future. 
-// The last branch with auto-tuner is: 
+// This operation used to implement auto-tuning. We have removed it for now due to complexity, but plan to revisit it in the future.
+// The last branch with auto-tuner is:
 // youki/packed-model-pr-backup1031
 // https://machinetranslation.visualstudio.com/Marian/_git/marian-dev?version=GByouki%2Fpacked-model-pr-backup1031
 // SHA: 3456a7ed1d1608cfad74cd2c414e7e8fe141aa52
@@ -540,7 +636,48 @@ Expr affine(Expr a, Expr b, Expr bias, bool transA, bool transB, float scale) {
 
   if(device == DeviceType::cpu) {
     if(isFloat(aElementType) && isFloat(bElementType)) {
-      return affineDefault(a, b, bias, transA, transB, scale);
+      if(a->graph()->getBackend()->isOptimized()) {
+        if(b->memoize() && (a->graph()->getBackend()->getGemmType() == GemmType::FbFp16Packed ||
+          a->graph()->getBackend()->getGemmType() == GemmType::FbInt8Packed)) {
+#if USE_FBGEMM
+          if(a->graph()->getBackend()->getGemmType() == GemmType::FbFp16Packed) {
+            auto packedB = cpu::variant::pack(
+                marian::Type::packed16, b, cpu::variant::PackMatrix::B, transB);
+            return cpu::variant::affine(marian::Type::packed16,
+                a, packedB, b->shape(), bias, transA, transB, scale);
+          } else {
+            float quantizeRange = b->graph()->getBackend()->getQuantizeRange();
+            if(fbgemm::fbgemmHasAvx512Support()) {
+              auto packedB = cpu::variant::pack(marian::Type::packed8avx512,
+                                                b,
+                                                cpu::variant::PackMatrix::B,
+                                                transB,
+                                                quantizeRange);
+              return cpu::variant::affine(marian::Type::packed8avx512,
+                  a, packedB, b->shape(), bias, transA, transB, scale);
+            } else if(fbgemm::fbgemmHasAvx2Support()) {
+              auto packedB = cpu::variant::pack(marian::Type::packed8avx2,
+                                                b,
+                                                cpu::variant::PackMatrix::B,
+                                                transB,
+                                                quantizeRange);
+              return cpu::variant::affine(marian::Type::packed8avx2,
+                  a, packedB, b->shape(), bias, transA, transB, scale);
+            } else {
+              ABORT(
+                  "AVX2 is not available. At least, AVX2 is needed to use fbgemm-based packed "
+                  "GEMM");
+            }
+          }
+#else
+          ABORT("Packed GEMM is not available in this build");
+#endif  // USE_FBGEMM
+        } else {
+          return affineDefault(a, b, bias, transA, transB, scale);
+        }
+      } else {
+        return affineDefault(a, b, bias, transA, transB, scale);
+      }
     } else if(isFloat(aElementType) && isIntgemm(bElementType)) {
       return cpu::integer::affineOrDot(a, b, bias, transA, transB, scale);
     } else if(isFloat(aElementType) && isPacked(bElementType)) {
@@ -552,7 +689,8 @@ Expr affine(Expr a, Expr b, Expr bias, bool transA, bool transB, float scale) {
       // and this cpu lookup is executed only once and the state is kept in FBGEMM.
       if(fbgemm::fbgemmHasAvx2Support()) {
         // This variant of affine product can handle matrix multiplications with packed8 and packed16 weight matrix (B).
-        return cpu::variant::affine(a,
+        return cpu::variant::affine(b->value_type(),
+                                    a,
                                     b,
                                     b->shape(),
                                     bias,
@@ -570,11 +708,43 @@ Expr affine(Expr a, Expr b, Expr bias, bool transA, bool transB, float scale) {
     }
   } else {
     // Default GEMM
-    ABORT_IF(!isFloat(aElementType) || !isFloat(bElementType), 
-             "GPU-based GEMM only supports float types, you have A: {} and B: {}", 
+    ABORT_IF(!isFloat(aElementType) || !isFloat(bElementType),
+             "GPU-based GEMM only supports float types, you have A: {} and B: {}",
              aElementType, bElementType);
     return affineDefault(a, b, bias, transA, transB, scale);
   }
+}
+
+// @TODO: unify all these
+Expr affineWithReluDropout(Expr x, Expr W, Expr bias, float dropProb) {
+  auto graph = x->graph();
+  if(graph->isInference() && graph->getDeviceId().type == DeviceType::gpu) {
+    // not doing any dropout in inference mode
+    return Expression<AffineWithReluNodeOp>(x, W, bias);
+  } else {
+    Expr output = affine(x, W, bias);
+    output = dropoutReluInplace(output, dropProb, Shape::Axes({-2, -1}));
+    return output;
+  }
+}
+
+Expr dropoutReluInplace(Expr x, Expr mask) {
+  return Expression<DropoutReluInplaceNodeOp>(x, mask);
+}
+
+Expr dropoutReluInplace(Expr x, float dropProb, Shape shape) {
+  Expr mask = dropProb ? x->graph()->dropoutMask(dropProb, shape) : nullptr;
+  return dropoutReluInplace(x, mask);
+}
+
+Expr dropoutReluInplace(Expr x, float dropProb, const Shape::Axes& axes) {
+  Expr mask = dropProb ? x->graph()->dropoutMask(dropProb, x->shape().fromAxes(axes)) : nullptr;
+  return dropoutReluInplace(x, mask);
+}
+
+Expr dropoutReluInplace(Expr x, float dropProb) {
+  Expr mask = dropProb ? x->graph()->dropoutMask(dropProb, x->shape()) : nullptr;
+  return dropoutReluInplace(x, mask);
 }
 
 // @TODO: Not a great place to check this
@@ -630,8 +800,7 @@ Expr transpose(Expr a, const std::vector<int>& axes) {
   return Expression<TransposeNodeOp>(a, axes);
 }
 
-Expr swapAxes(Expr x, int axis1, int axis2)
-{
+Expr swapAxes(Expr x, int axis1, int axis2) {
   const auto& shape = x->shape();
   axis1 = shape.axis(axis1);
   axis2 = shape.axis(axis2);
@@ -676,7 +845,7 @@ Expr unlikelihood(Expr logits, Expr indices) {
   int dimBatch = logits->shape()[-2];
   int dimTime  = logits->shape()[-3];
 
-  // @TODO: fix this outside of this function in decoder.h etc. 
+  // @TODO: fix this outside of this function in decoder.h etc.
   auto indicesWithLayout = reshape(indices, {1, dimTime, dimBatch, 1});
 
   // This is currently implemented with multiple ops, might be worth doing a special operation like for cross_entropy
@@ -728,19 +897,35 @@ Expr square(Expr a) {
 }
 
 Expr layerNorm(Expr x,
-               Expr gamma,
+               Expr gamma/*= nullptr*/,
                Expr beta /*= nullptr*/,
                float eps /*= 1e-9*/) {
 
   // layerNorm accumulates in float, so small eps is fine
-  std::vector<Expr> nodes = {x, gamma};
+  std::vector<Expr> nodes = {x};
+  if(gamma)
+    nodes.push_back(gamma);
   if(beta)
     nodes.push_back(beta);
   return Expression<LayerNormalizationOp>(nodes, eps);
 }
 
-Expr highway(Expr y, Expr x, Expr t) {
-  std::vector<Expr> nodes = {y, x, t};
+Expr rmsNorm(Expr x,
+             Expr gamma /*= nullptr*/,
+             Expr beta /*= nullptr*/,
+             float eps /*= 1e-9*/) {
+
+  // layerNorm accumulates in float, so small eps is fine
+  std::vector<Expr> nodes = {x};
+  if(gamma)
+    nodes.push_back(gamma);
+  if(beta)
+    nodes.push_back(beta);
+  return Expression<RMSNormalizationOp>(nodes, eps);
+}
+
+Expr highway(Expr input1, Expr input2, Expr gate) {
+  std::vector<Expr> nodes = {input1, input2, gate};
   return Expression<HighwayNodeOp>(nodes);
 }
 

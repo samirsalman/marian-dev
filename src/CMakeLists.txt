@@ -4,6 +4,9 @@ include_directories(.)
 include_directories(3rd_party)
 include_directories(3rd_party/SQLiteCpp/include)
 include_directories(3rd_party/sentencepiece)
+if(USE_SENTENCEPIECE)
+  include_directories(3rd_party/sentencepiece/third_party/protobuf-lite)
+endif(USE_SENTENCEPIECE)
 include_directories(3rd_party/fbgemm/include)
 include_directories(3rd_party/intgemm)
 include_directories(${CMAKE_BINARY_DIR}/src/3rd_party/intgemm) # running cmake on the intgemm submodule triggers config file generation in this directory.
@@ -58,6 +61,7 @@ set(MARIAN_SOURCES
   tensors/cpu/tensor_operators.cpp
   tensors/cpu/integer_common.cpp
   tensors/cpu/fbgemm/packed_gemm.cpp
+  tensors/gpu/gpu_info.cpp
 
   graph/expression_graph.cpp
   graph/expression_operators.cpp
@@ -72,10 +76,12 @@ set(MARIAN_SOURCES
   layers/generic.cpp
   layers/loss.cpp
   layers/weight.cpp
-  layers/lsh.cpp
   layers/embedding.cpp
   layers/output.cpp
   layers/logits.cpp
+  layers/lsh.cpp
+
+  layers_new/neuralnet.cpp
 
   rnn/cells.cpp
   rnn/attention.cpp
@@ -111,6 +117,7 @@ set(MARIAN_SOURCES
 
   # this is only compiled to catch build errors
   microsoft/quicksand.cpp
+  microsoft/sentencepiece.cpp
   microsoft/cosmos.cpp
 
   # copied from quicksand to be able to read binary shortlist
@@ -174,8 +181,10 @@ set_target_properties(marian PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY
 if(CUDA_FOUND)
   cuda_add_library(marian_cuda
     tensors/gpu/device.cu
+    tensors/gpu/hash.cu
     tensors/gpu/algorithm.cu
     tensors/gpu/prod.cpp
+    tensors/gpu/prod.cu
     tensors/gpu/prod_sparse.cpp
     tensors/gpu/topk.cu
     tensors/gpu/element.cu
@@ -233,33 +242,10 @@ if (NOT COMPILE_LIBRARY_ONLY)
 
   set(EXECUTABLES ${EXECUTABLES} marian_train marian_decoder marian_swapper marian_scorer marian_vocab marian_conv)
 
-  # marian.zip and marian.tgz
-  # This combines marian, marian_decoder in a single ZIP or TAR file for
-  # execution in MSFT internal tools FLO and Philly.
-  # For Philly submission, we need statically-linked versions to deal with
-  # library dependencies, so this target is only enabled for static builds.
-  add_custom_command(
-    OUTPUT "${CMAKE_BINARY_DIR}/marian.zip"
-    COMMAND zip -v -0 -j "${CMAKE_BINARY_DIR}/marian.zip"
-                "${CMAKE_BINARY_DIR}/marian"
-                "${CMAKE_BINARY_DIR}/marian-decoder"
-                "${CMAKE_BINARY_DIR}/marian-scorer"
-                "${CMAKE_BINARY_DIR}/marian-vocab"
-                "${CMAKE_BINARY_DIR}/marian-conv"
+  # generate the tgz file via a custom script. This will always re-create the tarball
+  add_custom_target(marian_tgz
+    COMMAND ${CMAKE_COMMAND} -DCWD=${CMAKE_BINARY_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/Tarball.cmake
     DEPENDS marian_train marian_decoder marian_scorer marian_vocab marian_conv)
-  add_custom_target(marian_zip DEPENDS "${CMAKE_BINARY_DIR}/marian.zip")
-
-  add_custom_command(
-    OUTPUT "${CMAKE_BINARY_DIR}/marian.tgz"
-    COMMAND tar -cvvzf "${CMAKE_BINARY_DIR}/marian.tgz" -C "${CMAKE_BINARY_DIR}"
-                "marian"
-                "marian-decoder"
-                "marian-scorer"
-                "marian-vocab"
-                "marian-conv"
-    DEPENDS marian_train marian_decoder marian_scorer marian_vocab marian_conv)
-  add_custom_target(marian_tgz DEPENDS "${CMAKE_BINARY_DIR}/marian.tgz")
-  add_custom_target(philly DEPENDS marian_tgz marian_zip)
 
   if(COMPILE_SERVER)
     add_executable(marian_server command/marian_server.cpp)

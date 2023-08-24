@@ -1,5 +1,7 @@
 #include "logging.h"
 #include "common/config.h"
+#include "common/utils.h"
+
 #include "spdlog/sinks/null_sink.h"
 #include "3rd_party/ExceptionWithCallStack.h"
 #include <time.h>
@@ -30,9 +32,14 @@ std::shared_ptr<spdlog::logger> createStderrLogger(const std::string& name,
   if(!quiet)
     sinks.push_back(stderr_sink);
 
-  for(auto&& file : files) {
-    auto file_sink = std::make_shared<spdlog::sinks::simple_file_sink_st>(file, true);
-    sinks.push_back(file_sink);
+  // @TODO: think how to solve this better than using OMPI_COMM_WORLD_RANK env variable
+  // only create output files if we are the main process or if MPI rank is not defined
+  int rank = marian::utils::getMPIRankEnv(); // this function looks up OMPI_COMM_WORLD_RANK env variable
+  if(rank == 0) {
+    for(auto&& file : files) {
+      auto file_sink = std::make_shared<spdlog::sinks::simple_file_sink_st>(file, true);
+      sinks.push_back(file_sink);
+    }
   }
 
   auto logger = std::make_shared<spdlog::logger>(name, begin(sinks), end(sinks));
@@ -136,11 +143,11 @@ static void setErrorHandlers() {
 
 // modify the log pattern for the "general" logger to include the MPI rank
 // This is called upon initializing MPI. It is needed to associated error messages to ranks.
-void switchtoMultinodeLogging(std::string nodeIdStr) {
+void switchToMultinodeLogging(std::string nodeIdStr) {
   Logger log = spdlog::get("general");
   if(log)
     log->set_pattern(fmt::format("[%Y-%m-%d %T mpi:{}] %v", nodeIdStr));
-  
+
   Logger valid = spdlog::get("valid");
   if(valid)
     valid->set_pattern(fmt::format("[%Y-%m-%d %T mpi:{}] [valid] %v", nodeIdStr));

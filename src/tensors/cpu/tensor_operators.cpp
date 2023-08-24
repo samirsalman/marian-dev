@@ -24,6 +24,10 @@ void IsNaN(const Tensor /*in*/, Ptr<Allocator> /*allocator*/, bool& /*isNaN*/, b
   ABORT("Not implemented");
 }
 
+bool SanitizeGradient(marian::Tensor /*in*/, Ptr<Allocator> /*allocator*/, bool /*pruneNaN*/, bool /*clipInf*/) {
+  ABORT("Not implemented");
+}
+
 template <bool add, typename To, typename From>
 void CopyCastTo(To* out, const From* in, int length) {
   for(int i = 0; i < length; ++i)
@@ -261,12 +265,12 @@ void TransposeFirst3In4(Tensor out, Tensor in, const std::vector<int>& vAxis) {
 
   // find the mapping between the transposed output dimensional indices (oi, oj, ok)
   // and original input dimensional indices (i, j, k)
-  int oi, oj, ok;
 #pragma omp parallel for
   for(int k = 0; k < l1; ++k) {
     int shift = k * l2 * l3;
     for(int j = 0; j < l2; ++j) {
       for(int i = 0; i < l3; ++i) {
+        int oi, oj, ok;
         if(vAxis[0] == 0) {
           if(vAxis[1] == 1) {
             oi = i; oj = j; ok = k;
@@ -384,12 +388,13 @@ void TransposeGeneric(Tensor out, Tensor in, const std::vector<int>& vAxis) {
 }
 
 void TransposeND(Tensor out, Tensor in, const std::vector<int>& vAxis) {
+#if MKL_FOUND
+  if(vAxis.size() == 4 && vAxis[3] == 3)
+    TransposeFirst3In4<false>(out, in, vAxis);
+  else
+#endif  // MKL_FOUND
   if(vAxis == std::vector<int>({0, 2, 1, 3}))
     Transpose0213<false>(out, in);
-#if MKL_FOUND
-  else if(vAxis.size() == 4 && vAxis[3] == 3)
-    TransposeFirst3In4<false>(out, in, vAxis);
-#endif  // MKL_FOUND
   else if(vAxis == std::vector<int>({1, 0}) && in->shape()[-1] % 16 == 0
           && in->shape()[-2] % 16 == 0)
     Transpose10(out, in);
@@ -705,6 +710,7 @@ void SelectAxis2(Tensor out,
 }
 #endif
 
+template <bool add>
 void Select(Tensor out,
             const Tensor in,
             const Tensor indices,
@@ -731,10 +737,17 @@ void Select(Tensor out,
     int idxIndex = idxShape.bindex(dims);                      // return global index for indices based on dimension-specific indices from out, take broadcasting into account;
     dims[axisCPU] = (int)indices->data<IndexType>()[idxIndex]; // substitute index of out-tensor with corresponding axis-local position from in-tensor;
     int inIndex = inShape.index(dims);                         // compute global index from dimension-specific indices, no broadcasting as out and in match in all dimensions apart from axis
-    out->data()[index] = in->data()[inIndex];                  // assign corresponding values.
+    if(add)
+      out->data()[index] += in->data()[inIndex];               // add for gradients.
+    else
+      out->data()[index] = in->data()[inIndex];                // assign corresponding values.
   }
 }
 
+template void Select<true>(Tensor out, const Tensor in, const Tensor indices, int axis);
+template void Select<false>(Tensor out, const Tensor in, const Tensor indices, int axis);
+
+template <bool add>
 void Insert(Tensor out,
             const Tensor in,
             const Tensor indices,
@@ -756,9 +769,15 @@ void Insert(Tensor out,
     int idxIndex = idxShape.bindex(dims); // broadcast index into indices tensor
     dims[axisCPU] = (int)indices->data<IndexType>()[idxIndex];
     int outIndex = outShape.index(dims);
-    out->data()[outIndex] += in->data()[index];
+    if(add)
+      out->data()[outIndex] += in->data()[index];
+    else
+      out->data()[outIndex] = in->data()[index];
   }
 }
+
+template void Insert<true>(Tensor out, const Tensor in, const Tensor indices, int axis);
+template void Insert<false>(Tensor out, const Tensor in, const Tensor indices, int axis);
 
 void GRUFastForward(Tensor out_, std::vector<Tensor> inputs, bool final) {
   int rows = out_->shape().elements() / out_->shape().back();
@@ -977,7 +996,7 @@ float L2Norm(Tensor in, Ptr<Allocator> /*not used*/) {
   float sum = 0.f;
   size_t size = in->size();
   const float* data = in->data();
-#pragma omp parallel for simd reduction(+ : sum)
+  #pragma omp parallel for simd reduction(+ : sum)
   for(size_t i = 0; i < size; ++i) {
     sum += data[i] * data[i];
   }
@@ -998,14 +1017,14 @@ void Att(Tensor out_, Tensor va_, Tensor context_, Tensor state_) {
   int rows = m;
   int cols = k;
 
-#pragma omp parallel for
+  #pragma omp parallel for
   for(int j = 0; j < rows; ++j) {
     const float* vaRow = va;
     const float* ctxRow = ctx + (j % (b * t)) * cols;
     const float* stateRow = state + ((j / (b * t)) * b + j % b) * cols;
 
     float sum = 0.f;
-#pragma omp simd reduction(+ : sum)
+    #pragma omp simd reduction(+ : sum)
     for(int i = 0; i < cols; ++i) {
       float z = ctxRow[i] + stateRow[i];
       sum += std::tanh(z) * vaRow[i];
@@ -1035,7 +1054,7 @@ void AttBack(Tensor gVa_,
   size_t k = context_->shape()[-1];
   size_t n = context_->shape()[-2];
 
-#pragma omp parallel for reduction(+ : gState[:n * k], gVa[:k])
+  #pragma omp parallel for reduction(+ : gState[:n * k], gVa[:k])
   for(size_t j = 0; j < m; ++j) {
     float* gcRow = gContext + j * k;
     float* gsRow = gState + (j % n) * k;
@@ -1045,7 +1064,7 @@ void AttBack(Tensor gVa_,
 
     float adj_j = adj[j];
 
-#pragma omp simd
+    #pragma omp simd
     for(size_t i = 0; i < k; ++i) {
       float z = cRow[i] + sRow[i];
 
@@ -1070,20 +1089,20 @@ void LayerNormalizationImpl(float* out,
                             float eps,
                             int rows,
                             int cols) {
-#pragma omp parallel for
+  #pragma omp parallel for
   for(int j = 0; j < rows; ++j) {
     float* so = out + j * cols;
     const float* sp = in + j * cols;
 
     float sum = 0.f;
-#pragma omp simd reduction(+ : sum)
+    #pragma omp simd reduction(+ : sum)
     for(int i = 0; i < cols; ++i) {
       sum += sp[i];
     }
 
     float mean = sum / cols;
     float sqSum = 0.f;
-#pragma omp simd reduction(+ : sqSum)
+    #pragma omp simd reduction(+ : sqSum)
     for(int i = 0; i < cols; ++i) {
       float ex = sp[i] - mean;
       sqSum += ex * ex;
@@ -1091,7 +1110,7 @@ void LayerNormalizationImpl(float* out,
 
     float sigma = std::sqrt(sqSum / cols + eps);
 
-#pragma omp simd
+    #pragma omp simd
     for(int i = 0; i < cols; ++i) {
       float t = alpha[alphaStride * i] * ((sp[i] - mean) / sigma);
       if(hasBeta)
@@ -1168,7 +1187,7 @@ void LayerNormalizationGrad(Tensor gradX_,
   size_t cols = y_->shape()[-1];
 
   if(beta) {
-#pragma omp parallel for reduction(+ : gradGamma[:cols], gradBeta[:cols])
+    #pragma omp parallel for reduction(+ : gradGamma[:cols], gradBeta[:cols])
     for(size_t j = 0; j < rows; ++j) {
       const float* xRow = x + j * cols;
       const float* yRow = y + j * cols;
@@ -1180,7 +1199,7 @@ void LayerNormalizationGrad(Tensor gradX_,
       float sum_adj_x = 0.f;
       float sum_sqr = 0.f;
 
-#pragma omp simd reduction(+ : sum_x, sum_adj_x, sum_adj)
+      #pragma omp simd reduction(+ : sum_x, sum_adj_x, sum_adj)
       for(size_t i = 0; i < cols; ++i) {
         sum_x += xRow[i];
         sum_adj_x += adjRow[i] * (yRow[i] - (beta ? beta[betaStride * i] : 0.f)) / gamma[gammaStride * i];
@@ -1188,14 +1207,14 @@ void LayerNormalizationGrad(Tensor gradX_,
       }
 
       float mean = sum_x / cols;
-#pragma omp simd reduction(+ : sum_sqr)
+      #pragma omp simd reduction(+ : sum_sqr)
       for(size_t i = 0; i < cols; ++i) {
         float ex = xRow[i] - mean;
         sum_sqr += ex * ex;
       }
 
       float sigma = std::sqrt(sum_sqr / cols + eps);
-#pragma omp simd
+      #pragma omp simd
       for(size_t i = 0; i < cols; ++i) {
         float grad_x = 0.f;
         float x_hat = (yRow[i] - beta[betaStride * i]) / gamma[gammaStride * i];
@@ -1209,8 +1228,8 @@ void LayerNormalizationGrad(Tensor gradX_,
         gradBeta[betaStride * i] += adjRow[i];
       }
     }
-  } else {
-#pragma omp parallel for reduction(+ : gradGamma[:cols])
+  } else { // @TODO: this code duplication is really ugly, but required for omp to work correctly?
+    #pragma omp parallel for reduction(+ : gradGamma[:cols])
     for(size_t j = 0; j < rows; ++j) {
       const float* xRow = x + j * cols;
       const float* yRow = y + j * cols;
@@ -1222,23 +1241,22 @@ void LayerNormalizationGrad(Tensor gradX_,
       float sum_adj_x = 0.f;
       float sum_sqr = 0.f;
 
-#pragma omp simd reduction(+ : sum_x, sum_adj_x, sum_adj)
+      #pragma omp simd reduction(+ : sum_x, sum_adj_x, sum_adj)
       for(size_t i = 0; i < cols; ++i) {
         sum_x += xRow[i];
-        sum_adj_x += adjRow[i] * (yRow[i] - (beta ? beta[betaStride * i] : 0.f)) / gamma[gammaStride * i];
-        // @TODO: beta is NULL here            ^^
+        sum_adj_x += adjRow[i] * yRow[i] / gamma[gammaStride * i];
         sum_adj += adjRow[i];
       }
 
       float mean = sum_x / cols;
-#pragma omp simd reduction(+ : sum_sqr)
+      #pragma omp simd reduction(+ : sum_sqr)
       for(size_t i = 0; i < cols; ++i) {
         float ex = xRow[i] - mean;
         sum_sqr += ex * ex;
       }
 
       float sigma = std::sqrt(sum_sqr / cols + eps);
-#pragma omp simd
+      #pragma omp simd
       for(size_t i = 0; i < cols; ++i) {
         float grad_x = 0.f;
         float x_hat = yRow[i] / gamma[gammaStride * i];
@@ -1249,6 +1267,163 @@ void LayerNormalizationGrad(Tensor gradX_,
 
         gradXRow[i] += gamma[gammaStride * i] * grad_x;
         gradGamma[gammaStride * i] += adjRow[i] * x_hat;
+      }
+    }
+  }
+}
+MARIAN_FFAST_MATH_END
+
+MARIAN_FFAST_MATH_BEGIN
+template <int alphaStride, int betaStride, bool hasBeta>
+void RMSNormalizationImpl(float* out,
+                          const float* in,
+                          const float* alpha,
+                          const float* beta,
+                          float eps,
+                          int rows,
+                          int cols) {
+  #pragma omp parallel for
+  for(int j = 0; j < rows; ++j) {
+    float* so = out + j * cols;
+    const float* sp = in + j * cols;
+
+    float sqSum = 0.f;
+    #pragma omp simd reduction(+ : sqSum)
+    for(int i = 0; i < cols; ++i) {
+      sqSum += sp[i] * sp[i];
+    }
+
+    float rms = std::sqrt(sqSum / cols + eps);
+
+    #pragma omp simd
+    for(int i = 0; i < cols; ++i) {
+      float t = alpha[alphaStride * i] * (sp[i] / rms);
+      if(hasBeta)
+        t += beta[betaStride * i];
+
+      so[i] = t;
+    }
+  }
+}
+MARIAN_FFAST_MATH_END
+
+template <int alphaStride>
+inline void RMSNormalizationDispatchBeta(float* out,
+                                           const float* in,
+                                           const float* alpha,
+                                           Tensor beta,
+                                           float eps,
+                                           int rows,
+                                           int cols) {
+  if (beta) {
+    if (beta->shape().back() > 1) {
+      RMSNormalizationImpl<alphaStride, 1, true>(out, in, alpha, beta->data(), eps, rows, cols);
+    } else {
+      RMSNormalizationImpl<alphaStride, 0, true>(out, in, alpha, beta->data(), eps, rows, cols);
+    }
+  } else {
+    RMSNormalizationImpl<alphaStride, 0, false>(out, in, alpha, nullptr, eps, rows, cols);
+  }
+}
+
+void RMSNormalization(Tensor out,
+                      Tensor in,
+                      Tensor gamma,
+                      Tensor beta,
+                      float eps) {
+  const float* alpha = gamma->data();
+  const int alphaStride = gamma->shape().back() > 1;  // broadcasting for alpha and beta
+
+  int rows = in->shape().elements() / in->shape().back();
+  int cols = in->shape().back();
+  if (alphaStride == 0) {
+    RMSNormalizationDispatchBeta<0>(out->data(), in->data(), alpha, beta, eps, rows, cols);
+  } else {
+    RMSNormalizationDispatchBeta<1>(out->data(), in->data(), alpha, beta, eps, rows, cols);
+  }
+}
+
+MARIAN_FFAST_MATH_BEGIN
+void RMSNormalizationGrad(Tensor gradX_,
+                          Tensor gradGamma_,
+                          Tensor gradBeta_,
+                          Tensor adj_,
+                          Tensor y_,
+                          Tensor x_,
+                          Tensor gamma_,
+                          Tensor beta_,
+                          float eps) {
+  float* gradX = gradX_->data();
+  float* gradGamma = gradGamma_->data();
+  float* gradBeta = gradBeta_ ? gradBeta_->data() : nullptr;
+  float* adj = adj_->data();
+  float* x = x_->data();
+  float* y = y_->data();
+  float* gamma = gamma_->data();
+  float* beta = beta_ ? beta_->data() : nullptr;
+  // @TODO: The CPU implementation supports scalar gamma and beta. This is a left-over,
+  //        we should enable that in the GPU version as well.
+  const int gammaStride = gamma_->shape().back() > 1;  // broadcasting for alpha and beta. 0 means it's a scalar
+  const int betaStride = beta_ && beta_->shape().back() > 1;
+
+  size_t rows = y_->shape().elements() / y_->shape()[-1];
+  size_t cols = y_->shape()[-1];
+
+  if(beta) {
+    #pragma omp parallel for reduction(+ : gradGamma[:cols], gradBeta[:cols])
+    for(size_t j = 0; j < rows; ++j) {
+      const float* xRow = x + j * cols;
+      const float* yRow = y + j * cols;
+      const float* adjRow = adj + j * cols;
+      float* gradXRow = gradX + j * cols;
+
+      float sum_adj_r = 0.f;
+      float sum_sqr = 0.f;
+
+      #pragma omp simd reduction(+ : sum_adj_r, sum_sqr)
+      for(size_t i = 0; i < cols; ++i) {
+        sum_adj_r += adjRow[i] * (yRow[i] - beta[betaStride * i]) / gamma[gammaStride * i];
+        sum_sqr   += xRow[i] * xRow[i];
+      }
+
+      float rms = std::sqrt(sum_sqr / cols + eps);
+      #pragma omp simd
+      for(size_t i = 0; i < cols; ++i) {
+        float rmsNorm  = (yRow[i] - beta[betaStride * i]) / gamma[gammaStride * i];
+        float gradNorm = cols * adjRow[i] - rmsNorm * sum_adj_r;
+        gradNorm      /= cols * rms; 
+
+        gradXRow[i]                += gamma[gammaStride * i] * gradNorm;
+        gradGamma[gammaStride * i] += adjRow[i] * rmsNorm;
+        gradBeta[betaStride * i]   += adjRow[i];
+      }
+    }
+  } else {
+    #pragma omp parallel for reduction(+ : gradGamma[:cols])
+    for(size_t j = 0; j < rows; ++j) {
+      const float* xRow = x + j * cols;
+      const float* yRow = y + j * cols;
+      const float* adjRow = adj + j * cols;
+      float* gradXRow = gradX + j * cols;
+
+      float sum_adj_r = 0.f;
+      float sum_sqr = 0.f;
+
+      #pragma omp simd reduction(+ : sum_adj_r, sum_sqr)
+      for(size_t i = 0; i < cols; ++i) {
+        sum_adj_r += yRow[i] / gamma[gammaStride * i];
+        sum_sqr += xRow[i] * xRow[i];
+      }
+
+      float rms = std::sqrt(sum_sqr / cols + eps);
+      #pragma omp simd
+      for(size_t i = 0; i < cols; ++i) {
+        float rmsNorm  = yRow[i] / gamma[gammaStride * i];
+        float gradNorm = cols * adjRow[i] - rmsNorm * sum_adj_r;
+        gradNorm      /= cols * rms; 
+
+        gradXRow[i]                += gamma[gammaStride * i] * gradNorm;
+        gradGamma[gammaStride * i] += adjRow[i] * rmsNorm;
       }
     }
   }

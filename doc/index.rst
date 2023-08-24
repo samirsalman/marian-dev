@@ -1,7 +1,7 @@
 Welcome to Marian's documentation!
 ==================================
 
-|buildgpu| |buildcpu| |tests| |release| |license|
+|ubuntu| |windows| |macos| |release| |license|
 
 Marian is an efficient and self-contained Neural Machine Translation framework with an integrated
 automatic differentiation engine based on dynamic computation graphs, written entirely in C++.
@@ -12,12 +12,16 @@ This is developer documentation. User documentation is available at https://mari
    :maxdepth: 2
    :caption: Contents:
 
+   structure
    graph
    operators
-
+   layer
+   factors
    api/library_index
 
-   contributing
+   CONTRIBUTING
+
+   doc_guide
 
 
 Indices and tables
@@ -26,17 +30,17 @@ Indices and tables
 * :ref:`genindex`
 
 
-.. |buildgpu| image:: https://img.shields.io/jenkins/s/http/vali.inf.ed.ac.uk/jenkins/view/marian/job/marian-dev-cuda-10.1.svg?label=CUDAC%20Build
-   :target: http://vali.inf.ed.ac.uk/jenkins/job/marian-dev/
-   :alt: GPU build status
+.. |ubuntu| image:: https://github.com/marian-nmt/marian-dev/actions/workflows/ubuntu.yml/badge.svg
+   :target: https://github.com/marian-nmt/marian-dev/actions/workflows/ubuntu.yml
+   :alt: Ubuntu build status
 
-.. |buildcpu| image:: https://img.shields.io/jenkins/s/http/vali.inf.ed.ac.uk/jenkins/view/marian/job/marian-dev-cpu.svg?label=CPU%20Build
-   :target: http://vali.inf.ed.ac.uk/jenkins/job/marian-dev-cpu/
-   :alt: CPU build status
+.. |windows| image:: https://github.com/marian-nmt/marian-dev/actions/workflows/windows.yml/badge.svg
+   :target: https://github.com/marian-nmt/marian-dev/actions/workflows/windows.yml
+   :alt: Windows build status
 
-.. |tests| image:: https://img.shields.io/jenkins/s/http/vali.inf.ed.ac.uk/jenkins/view/marian/job/marian-regression-tests.svg?label=Tests
-   :target: http://vali.inf.ed.ac.uk/jenkins/job/marian-regression-tests/
-   :alt: Tests status
+.. |macos| image:: https://github.com/marian-nmt/marian-dev/actions/workflows/macos.yml/badge.svg
+   :target: https://github.com/marian-nmt/marian-dev/actions/workflows/macos.yml
+   :alt: MacOS build status
 
 .. |release| image:: https://img.shields.io/github/release/marian-nmt/marian.svg?label=Release
    :target: https://github.com/marian-nmt/marian/releases

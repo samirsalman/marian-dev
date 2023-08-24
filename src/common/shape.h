@@ -12,8 +12,20 @@
 
 namespace marian {
 
-struct Slice // Python-like slice/index descriptor
-{
+/**
+ * This exception gets thrown when the requested shape cannot be allocated due to numeric capacity limitations.
+*/
+class ShapeSizeException : public std::runtime_error {
+public:
+  ShapeSizeException(size_t available, size_t asked) 
+  : std::runtime_error(fmt::format("Expanded shape size {} exceeds numeric capcacity {}", asked, available))
+  {}
+};
+
+/**
+ * Python-like slice/index descriptor
+ */
+struct Slice {
   Slice(int b, int e, int s) : begin(b), end(e), stride(s) {}
   Slice(int b, int e) : Slice(b, e, 1) {}
   Slice() : Slice(0, END) {}
@@ -26,6 +38,7 @@ struct Slice // Python-like slice/index descriptor
   /*const*/ int begin, end, stride;
   static const int END = INT_MAX;
 };
+
 typedef std::vector<Slice> Slices;
 
 /**
@@ -41,6 +54,8 @@ private:
   std::vector<int> shape_;
 
 public:
+  typedef std::vector<int> Axes;
+
   Shape() : shape_({1}) {}
 
   Shape(std::initializer_list<int> il) : Shape() {
@@ -110,10 +125,12 @@ public:
 
   template<typename T = int> // using a template so that FactoredSegmenter, which uses this as well, can pass size_t
   inline T elements() const {
-    T el = 1;
+    size_t el = 1;
     for(auto s : shape_)
-      el *= (T)s;
-    return el;
+      el *= (size_t)s;
+    if(el > std::numeric_limits<T>::max())
+      throw ShapeSizeException(std::numeric_limits<T>::max(), el);
+    return (T)el;
   }
 
   inline void dims(int i, std::vector<int>& d) const {
@@ -230,6 +247,14 @@ public:
       }
     }
     return shape;
+  }
+
+  Shape fromAxes(const Axes& axes) const {
+    Shape subShape;
+    subShape.resize(size());
+    for(Axes::value_type axis : axes)
+      subShape.set(axis, dim(axis));
+    return subShape;
   }
 
   size_t hash() const {

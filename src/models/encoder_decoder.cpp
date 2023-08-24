@@ -37,8 +37,11 @@ EncoderDecoder::EncoderDecoder(Ptr<ExpressionGraph> graph, Ptr<Options> options)
 
   modelFeatures_.insert("transformer-heads");
   modelFeatures_.insert("transformer-no-projection");
+  modelFeatures_.insert("transformer-rnn-projection");
   modelFeatures_.insert("transformer-dim-ffn");
+  modelFeatures_.insert("transformer-decoder-dim-ffn");
   modelFeatures_.insert("transformer-ffn-depth");
+  modelFeatures_.insert("transformer-decoder-ffn-depth");
   modelFeatures_.insert("transformer-ffn-activation");
   modelFeatures_.insert("transformer-dim-aan");
   modelFeatures_.insert("transformer-aan-depth");
@@ -62,6 +65,12 @@ EncoderDecoder::EncoderDecoder(Ptr<ExpressionGraph> graph, Ptr<Options> options)
   modelFeatures_.insert("ulr-dim-emb");
   modelFeatures_.insert("lemma-dim-emb");
   modelFeatures_.insert("output-omit-bias");
+  modelFeatures_.insert("lemma-dependency");
+  modelFeatures_.insert("factors-combine");
+  modelFeatures_.insert("factors-dim-emb");
+
+  modelFeatures_.insert("transformer-no-bias");
+  modelFeatures_.insert("transformer-no-affine");
 }
 
 std::vector<Ptr<EncoderBase>>& EncoderDecoder::getEncoders() {
@@ -142,6 +151,12 @@ std::string EncoderDecoder::getModelParametersAsString() {
 }
 
 void EncoderDecoder::load(Ptr<ExpressionGraph> graph,
+                          const std::vector<io::Item>& items,
+                          bool markedReloaded) {
+  graph->load(items, markedReloaded && !opt<bool>("ignore-model-config", false));
+}
+
+void EncoderDecoder::load(Ptr<ExpressionGraph> graph,
                           const std::string& name,
                           bool markedReloaded) {
   graph->load(name, markedReloaded && !opt<bool>("ignore-model-config", false));
@@ -211,7 +226,7 @@ Ptr<DecoderState> EncoderDecoder::stepAll(Ptr<ExpressionGraph> graph,
   if(clearGraph)
     clear(graph);
 
-  // Required first step, also intializes shortlist
+  // Required first step, also initializes shortlist
   auto state = startState(graph, batch);
 
   // Fill state with embeddings from batch (ground truth)

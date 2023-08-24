@@ -13,6 +13,7 @@ namespace cli {
 const std::unordered_set<std::string> DEPRECATED_OPTIONS = {
   "version",
   "special-vocab",
+  "num-devices",
 // @TODO: uncomment once we actually deprecate them.
 //  "after-batches",
 //  "after-epochs"
@@ -113,10 +114,10 @@ std::string CLIWrapper::switchGroup(std::string name) {
   return name;
 }
 
-void CLIWrapper::parse(int argc, char **argv) {
+void CLIWrapper::parse(int argc, char** argv) {
   try {
     app_->parse(argc, argv);
-  } catch(const CLI::ParseError &e) {
+  } catch(const CLI::ParseError& e) {
     exit(app_->exit(e));
   }
 
@@ -132,8 +133,14 @@ void CLIWrapper::parseAliases() {
   if(aliases_.empty())
     return;
 
+  // Find the set of values allowed for each alias option.
+  // Later we will check and abort if an alias option has an unknown value.
+  std::unordered_map<std::string, std::unordered_set<std::string>> allowedAliasValues;
+  for(auto &&alias : aliases_)
+    allowedAliasValues[alias.key].insert(alias.value);
+
   // Iterate all known aliases, each alias has a key, value, and config
-  for(const auto &alias : aliases_) {
+  for(auto &&alias : aliases_) {
     // Check if the alias option exists in the config (it may come from command line or a config
     // file)
     if(config_[alias.key]) {
@@ -145,6 +152,15 @@ void CLIWrapper::parseAliases() {
       bool expand = false;
       if(config_[alias.key].IsSequence()) {
         auto aliasOpts = config_[alias.key].as<std::vector<std::string>>();
+        // Abort if an alias option has an unknown value, i.e. value that has not been defined
+        // in common/aliases.cpp
+        for(auto &&aliasOpt : aliasOpts)
+          if(allowedAliasValues[alias.key].count(aliasOpt) == 0) {
+            std::vector<std::string> allowedOpts(allowedAliasValues[alias.key].begin(),
+                                                 allowedAliasValues[alias.key].end());
+            ABORT("Unknown value '" + aliasOpt + "' for alias option --" + alias.key + ". "
+                  "Allowed values: " + utils::join(allowedOpts, ", "));
+          }
         expand = std::find(aliasOpts.begin(), aliasOpts.end(), alias.value) != aliasOpts.end();
       } else {
         expand = config_[alias.key].as<std::string>() == alias.value;
@@ -165,6 +181,13 @@ void CLIWrapper::parseAliases() {
   for(const auto &alias : aliases_) {
     config_.remove(alias.key);
   }
+}
+
+std::string CLIWrapper::keyName(const std::string& args) const {
+  // re-use existing functions from CLI11 to keep option names consistent
+  return std::get<1>(
+              CLI::detail::get_names(CLI::detail::split_names(args)))  // get long names only
+      .front();                                                        // get first long name
 }
 
 void CLIWrapper::updateConfig(const YAML::Node &config, cli::OptionPriority priority, const std::string &errorMsg) {
@@ -261,7 +284,7 @@ std::vector<std::string> CLIWrapper::getOrderedOptionNames() const {
   for(auto const &it : options_)
     keys.push_back(it.first);
   // sort option names by creation index
-  sort(keys.begin(), keys.end(), [this](const std::string &a, const std::string &b) {
+  sort(keys.begin(), keys.end(), [this](const std::string& a, const std::string& b) {
     return options_.at(a).idx < options_.at(b).idx;
   });
   return keys;
