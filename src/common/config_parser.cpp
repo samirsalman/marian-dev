@@ -653,11 +653,9 @@ void ConfigParser::addOptionsValidation(cli::CLIWrapper& cli) {
   cli.add<size_t>("--early-stopping",
       "Stop if the first validation metric does not improve for  arg  consecutive validation steps",
       10);
-    cli.add<std::string>("--valid-from",
-        "Validate model not before arg updates (append 't' for every arg target labels)",
-        "0u");
-      "Stop if the first validation metric does not improve for arg consecutive validation steps",
-      10);
+  cli.add<std::string>("--valid-from",
+      "Validate model not before arg updates (append 't' for every arg target labels)",
+      "0u");
   cli.add<std::vector<float>>("--early-stopping-epsilon",
       "An improvement lower than or equal to arg does not prevent stalled validation. "
       "i-th value corresponds to i-th metric in --valid-metrics",
